@@ -198,6 +198,29 @@ describe('DefaultAgentRuntime', () => {
     })
   })
 
+  it('sessão com status error lança ProviderError com a causa e o usage (INV-7)', async () => {
+    await withTempDir(async (dir) => {
+      const { runtime } = makeRuntime()
+      const provider = new ScriptedProvider([
+        {
+          status: 'error',
+          text: 'Not logged in · Please run /login',
+          usage: { ...EMPTY_USAGE, input: 42 },
+          costUsd: 0.001,
+        },
+      ])
+      await expect(
+        runtime.run(EXECUTOR_SPEC, makeContext(dir, provider), new AbortController().signal),
+      ).rejects.toMatchObject({
+        code: 'E_PROVIDER',
+        message: expect.stringContaining('Not logged in') as string,
+        context: expect.objectContaining({
+          usage: expect.objectContaining({ input: 42 }) as unknown,
+        }) as unknown,
+      })
+    })
+  })
+
   it('hooks afterRun substituem a normalização default', async () => {
     await withTempDir(async (dir) => {
       const prompts = new DefaultPromptRegistry()

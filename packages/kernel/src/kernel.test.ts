@@ -207,6 +207,42 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
     })
   }, 60_000)
 
+  it('provider falhando repetidamente bloqueia com a causa visível, não replaneja', async () => {
+    await withTempDir(async (dir) => {
+      createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+      // Duas sessões consecutivas morrem com erro de auth (o caso real do teste
+      // de campo: CLI do Claude Code sem login).
+      const authError = {
+        status: 'error' as const,
+        text: 'Not logged in · Please run /login',
+      }
+      const stack = await makeTestStack(dir, [authError, authError])
+      try {
+        const task = await stack.enqueue({
+          title: 'Vitima do auth',
+          acceptance: artifactAcceptance('src/a.ts', '.'),
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const final = await stack.state.tasks.find(task.id)
+        // Bloqueada — não em draft: replanejar não conserta infra quebrada.
+        expect(final?.state).toBe('blocked')
+        expect(final?.blockReason?.kind).toBe('provider')
+        // A mensagem do provider está no blockReason, visível no `task list`.
+        expect(final?.blockReason?.message).toContain('Not logged in')
+
+        const attempts = await stack.state.attempts.byTask(task.id)
+        expect(attempts.every((a) => a.outcome?.diagnosis?.category === 'provider-error')).toBe(
+          true,
+        )
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 60_000)
+
   it('orçamento insuficiente bloqueia a task ANTES de gastar (INV-7)', async () => {
     await withTempDir(async (dir) => {
       createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })

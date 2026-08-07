@@ -206,9 +206,13 @@ class ClaudeCodeSession implements ProviderSession {
             : 'completed'
 
       if (status === 'error') {
+        // O Claude Code reporta erros no stream (stdout), não no stderr — o
+        // texto do result ("Not logged in · Please run /login", rate limit,
+        // etc.) é a única mensagem útil e precisa aparecer no log.
         this.logger.warn('Sessão do Claude Code terminou com erro', {
           exitCode: shell.exitCode,
-          stderr: shell.stderr.slice(0, 500),
+          reason: meta?.resultText.slice(0, 500) ?? shell.stdout.slice(-500),
+          stderr: shell.stderr.slice(0, 300),
         })
       }
 

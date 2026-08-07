@@ -17,6 +17,7 @@ import type {
   Task,
   TaskId,
   TickPhase,
+  TokenUsage,
   Verification,
   Workspace,
 } from '@uranus/core'
@@ -26,9 +27,12 @@ import {
   decideAfterFailure,
   digestOf,
   err,
+  failureHistory,
   isRestrictedMode,
   isRetryableCategory,
   isTerminal,
+  isUranusError,
+  moneyFromMicros,
   newAttemptId,
   newRunId,
   ok,
@@ -520,13 +524,28 @@ export class UranusKernel implements Kernel {
         crashed = true // kill -9: sem tratamento nem contabilidade
         throw error
       }
-      // Falha de infraestrutura (provider caiu, abort, etc.)
+      // Falha de infraestrutura (provider caiu, auth, abort, etc.)
       const message = error instanceof Error ? error.message : String(error)
       this.deps.logger.error('Execução falhou fora da verificação', {
         taskId: task.id,
         error: message,
       })
       failureCategory = 'provider-error'
+      // INV-7: uma sessão que morreu no meio pode ter consumido tokens reais.
+      // O ProviderError carrega o usage/custo apurado até a morte.
+      if (isUranusError(error)) {
+        const usage = error.context['usage'] as TokenUsage | undefined
+        const costMicros = error.context['costMicros'] as number | undefined
+        if (usage !== undefined || costMicros !== undefined) {
+          agentOutput = {
+            summary: message,
+            memoryDrafts: [],
+            followUps: [],
+            usage: usage ?? EMPTY_USAGE,
+            cost: moneyFromMicros(costMicros ?? 0),
+          }
+        }
+      }
       const current = (await queue.get(task.id)) ?? running
       await this.handleFailure(
         current,
@@ -539,7 +558,7 @@ export class UranusKernel implements Kernel {
           diagnosis: {
             category: 'provider-error',
             summary: message,
-            evidence: [],
+            evidence: [{ kind: 'event', ref: 'provider', excerpt: message.slice(0, 1_000) }],
             suggestedAction: 'retry',
           },
         },
@@ -807,11 +826,30 @@ export class UranusKernel implements Kernel {
     )
 
     const history = await this.deps.attempts.byTask(task.id)
-    const decision = decideAfterFailure(failed, {
-      retryableCategory: isRetryableCategory(diagnosis.category),
-      repeatedCategory: repeatedLastCategory(history) || isOscillating(history),
-      suggestedAction: diagnosis.suggestedAction,
-    })
+    const categories = failureHistory(history)
+    const providerFailedRepeatedly =
+      diagnosis.category === 'provider-error' &&
+      categories.length >= 2 &&
+      categories.at(-2) === 'provider-error'
+
+    // Erro de infra repetido (auth quebrada, provider fora do ar) não é problema
+    // de plano: replanejar não conserta nada e "draft" esconderia a causa.
+    // Bloqueia com a mensagem do provider visível para o humano.
+    const decision = providerFailedRepeatedly
+      ? {
+          next: 'blocked' as const,
+          reason: 'provider falhou repetidamente',
+          blockReason: {
+            kind: 'provider' as const,
+            message: diagnosis.summary.slice(0, 500),
+            resolvableBy: 'human' as const,
+          },
+        }
+      : decideAfterFailure(failed, {
+          retryableCategory: isRetryableCategory(diagnosis.category),
+          repeatedCategory: repeatedLastCategory(history) || isOscillating(history),
+          suggestedAction: diagnosis.suggestedAction,
+        })
 
     const moved = transition(failed, decision.next, {
       at: now,

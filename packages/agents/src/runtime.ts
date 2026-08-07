@@ -10,7 +10,7 @@ import type {
   PromptRegistry,
   SessionRequest,
 } from '@uranus/core'
-import { intersectPermissions, unwrap } from '@uranus/core'
+import { ProviderError, intersectPermissions, unwrap } from '@uranus/core'
 
 export interface DefaultAgentRuntimeOptions {
   readonly prompts: PromptRegistry
@@ -58,6 +58,23 @@ export class DefaultAgentRuntime implements AgentRuntime {
     }
 
     const result = await session.result()
+
+    // Sessão que morreu (auth, rede, limite) NÃO segue para verificação: o
+    // workspace intocado produziria "diff vazio" e enterraria a causa real.
+    // O texto do provider ("Not logged in · Please run /login", etc.) é o
+    // diagnóstico — ele sobe no erro e chega ao blockReason da task.
+    if (result.status === 'error' || result.status === 'limit_reached') {
+      throw new ProviderError(
+        `Sessão do provider terminou com "${result.status}": ${result.text.slice(0, 500)}`,
+        {
+          context: {
+            status: result.status,
+            usage: result.usage,
+            costMicros: result.cost.micros,
+          },
+        },
+      )
+    }
 
     if (hooks?.afterRun !== undefined) {
       return hooks.afterRun(prepared, result)
