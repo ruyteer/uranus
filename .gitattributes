@@ -1,0 +1,25 @@
+# ADR-011 / R10 — Windows é cidadão de primeira classe.
+# CRLF em arquivos versionados polui todo diff que o Uranus produzir e quebra
+# a comparação de checksums de CodeRef na memória. LF é forçado no repositório.
+* text=auto eol=lf
+
+# Scripts que o Windows precisa executar com CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binários — nunca normalizar.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.db   binary
+*.sqlite binary
+
+# Não contam como código na estatística de linguagem do host.
+docs/**       linguist-documentation
+pnpm-lock.yaml -diff linguist-generated

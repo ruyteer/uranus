@@ -1,0 +1,9 @@
+packages:
+  - 'packages/*'
+allowBuilds:
+  # esbuild é dependência do vitest e precisa do postinstall para baixar o binário.
+  esbuild: true
+
+# Motores nativos ficam fora do escopo por decisão de arquitetura (ADR-004):
+# a camada SQLite usa `node:sqlite` (builtin do Node >= 22) atrás de um driver
+# abstrato, evitando compilação nativa no Windows.

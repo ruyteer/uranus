@@ -1,0 +1,27 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.tsbuild/
+
+# Runtime do Uranus (ADR-004): memory/, backlog/, rules/ e config.yaml SÃO commitados.
+.uranus/state.db
+.uranus/state.db-*
+.uranus/events/
+.uranus/checkpoints/
+.uranus/runs/
+.uranus/workspaces/
+.uranus/w/
+.uranus/cache/
+.uranus/logs/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
