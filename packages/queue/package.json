@@ -1,0 +1,33 @@
+{
+  "name": "@uranus/queue",
+  "version": "0.1.0",
+  "description": "Uranus - fila de tasks persistente com leases, dependencias e dead-letter.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "uranus-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "clean": "tsc -b tsconfig.build.json --clean"
+  },
+  "dependencies": {
+    "@uranus/core": "workspace:*",
+    "@uranus/state": "workspace:*"
+  },
+  "devDependencies": {
+    "@uranus/testkit": "workspace:*"
+  }
+}

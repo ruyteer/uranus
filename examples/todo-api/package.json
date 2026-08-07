@@ -1,0 +1,10 @@
+{
+  "name": "todo-api-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Repo de exemplo do Uranus - uma API de todos minima com testes.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

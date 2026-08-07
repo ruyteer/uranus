@@ -5,6 +5,14 @@
     { "path": "packages/config/tsconfig.build.json" },
     { "path": "packages/events/tsconfig.build.json" },
     { "path": "packages/state/tsconfig.build.json" },
-    { "path": "packages/testkit/tsconfig.build.json" }
+    { "path": "packages/testkit/tsconfig.build.json" },
+    { "path": "packages/executors/tsconfig.build.json" },
+    { "path": "packages/vcs/tsconfig.build.json" },
+    { "path": "packages/queue/tsconfig.build.json" },
+    { "path": "packages/prompts/tsconfig.build.json" },
+    { "path": "packages/providers/tsconfig.build.json" },
+    { "path": "packages/agents/tsconfig.build.json" },
+    { "path": "packages/kernel/tsconfig.build.json" },
+    { "path": "packages/cli/tsconfig.build.json" }
   ]
 }

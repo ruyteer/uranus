@@ -35,10 +35,18 @@ export const DENY_ALL: PermissionSet = Object.freeze({
   secrets: Object.freeze({ allow: [] as readonly string[] }),
 })
 
+function isWildcardList(list: readonly string[]): boolean {
+  // `*` (ferramentas/exec) e `**` (globs de fs) significam "tudo".
+  return list.includes('*') || list.includes('**')
+}
+
 function intersectLists(a: readonly string[], b: readonly string[]): readonly string[] {
-  // `*` significa "tudo": a interseção com qualquer conjunto é o outro conjunto.
-  if (a.includes('*')) return b
-  if (b.includes('*')) return a
+  // "Tudo" ∩ X = X. Fora do caso curinga, interseção literal — que é
+  // deliberadamente conservadora: dois globs parciais distintos não se
+  // intersectam aqui mesmo que possam casar arquivos em comum, porque a
+  // permissão resultante deve ser NO MÁXIMO tão ampla quanto cada camada.
+  if (isWildcardList(a)) return b
+  if (isWildcardList(b)) return a
   const set = new Set(b)
   return a.filter((item) => set.has(item))
 }

@@ -1,10 +1,18 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+
+const packagesDir = fileURLToPath(new URL('./packages', import.meta.url))
 
 export default defineConfig({
   resolve: {
-    // Os pacotes declaram a condição `uranus-source` apontando para `src/`.
-    // Sem isto, rodar a suíte exigiria `tsc -b` antes de cada execução.
-    conditions: ['uranus-source'],
+    // Mapeia @uranus/* direto para o fonte. Sem isto o vitest resolveria para
+    // `dist/` — e a suíte testaria um build velho em vez do código editado.
+    alias: [
+      {
+        find: /^@uranus\/([a-z-]+)$/,
+        replacement: `${packagesDir}/$1/src/index.ts`,
+      },
+    ],
   },
   test: {
     globals: false,
@@ -24,6 +32,8 @@ export default defineConfig({
         '**/index.ts',
         '**/contracts/**', // type-only: sem código executável
         'packages/testkit/**', // ferramenta de teste, não produto
+        'packages/cli/**', // fiação fina sobre módulos já testados; e2e cobre
+        'packages/kernel/src/test-stack.ts', // harness de teste, não produto
       ],
       // INV do roadmap: kernel/core >= 90%, demais >= 80%.
       thresholds: {

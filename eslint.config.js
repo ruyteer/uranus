@@ -55,7 +55,14 @@ const boundaries = [
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/coverage/**', '**/node_modules/**', '**/*.tsbuildinfo'],
+    ignores: [
+      '**/dist/**',
+      '**/coverage/**',
+      '**/node_modules/**',
+      '**/*.tsbuildinfo',
+      // Fixtures de exemplo: são repositórios-alvo do Uranus, não código do framework.
+      'examples/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

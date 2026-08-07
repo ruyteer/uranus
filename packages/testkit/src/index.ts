@@ -1,5 +1,7 @@
 export * from './fakes/clock.js'
 export * from './fakes/event-store.js'
 export * from './fakes/logger.js'
+export * from './fakes/provider.js'
 export * from './fixtures/task.js'
 export * from './fixtures/tempdir.js'
+export * from './fixtures/repo.js'

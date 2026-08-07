@@ -1,0 +1,31 @@
+# Task de exemplo para `uranus task add --file tasks/add-remove-endpoint.yaml`.
+#
+# O contrato de aceite é o coração: o Uranus só marca a task como done se
+# TODOS os checks bloqueantes passarem — nunca pela palavra do modelo (INV-2).
+kind: feature
+title: Adicionar remocao de todos
+intent: >
+  Adicionar um metodo `remove(id)` ao store em src/todos.mjs que remove o todo
+  com o id dado e retorna true, ou false se o id nao existir. Cobrir com testes
+  em test/todos.test.mjs: remover existente, remover inexistente, e que list()
+  reflete a remocao.
+touches:
+  - src/**
+  - test/**
+maxAttempts: 3
+acceptance:
+  checks:
+    - kind: command
+      id: suite-passa
+      run: node --test
+      timeoutMs: 120000
+    - kind: artifact
+      id: metodo-existe
+      path: src/todos.mjs
+      mustExist: true
+      matches: 'remove\('
+      timeoutMs: 5000
+    - kind: diff
+      id: escopo
+      requireNonEmpty: true
+      timeoutMs: 30000

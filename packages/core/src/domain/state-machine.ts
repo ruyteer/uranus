@@ -19,7 +19,8 @@ import { isTerminal } from './task.js'
  *     ▲       ▲          │          │          │      │                    │
  *     │       │          ▼          ▼          ▼      └─▶ failed ─ retry ──┘
  *     │       └── unblock ── blocked ◀─────────┴───────────┘  │
- *     │                                                       ▼
+ *     │       ▲                                               ▼
+ *     │       └── interrupção: qualquer estado ativo ─▶ ready (kill -9 + recovery)
  *     └───────────────── abandoned ◀──────────────────── exhausted
  */
 
@@ -28,10 +29,13 @@ const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = Object.fr
   ready: ['claimed', 'blocked', 'abandoned'],
   // `claimed → ready` é a devolução do lease sem execução (ex.: kernel pausado).
   claimed: ['running', 'ready', 'blocked', 'abandoned'],
-  running: ['verifying', 'failed', 'blocked', 'abandoned'],
-  verifying: ['verified', 'failed', 'blocked'],
-  verified: ['integrating', 'blocked'],
-  integrating: ['done', 'failed', 'blocked'],
+  // `<ativo> → ready` é a interrupção (kill -9 + recovery): a task volta à fila
+  // e a próxima tentativa parte limpa. Sem estas arestas, um crash nas fases
+  // execute/verify/integrate deixaria a task presa para sempre (INV-4).
+  running: ['verifying', 'failed', 'blocked', 'ready', 'abandoned'],
+  verifying: ['verified', 'failed', 'blocked', 'ready'],
+  verified: ['integrating', 'blocked', 'ready'],
+  integrating: ['done', 'failed', 'blocked', 'ready'],
   // `failed → draft` é o replanejamento: a task volta ao Planner.
   failed: ['ready', 'blocked', 'draft', 'abandoned'],
   blocked: ['ready', 'draft', 'abandoned'],

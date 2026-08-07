@@ -32,6 +32,61 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@24.13.3)(yaml@2.9.0)
 
+  packages/agents:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/prompts':
+        specifier: workspace:*
+        version: link:../prompts
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/cli:
+    dependencies:
+      '@uranus/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@uranus/config':
+        specifier: workspace:*
+        version: link:../config
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/events':
+        specifier: workspace:*
+        version: link:../events
+      '@uranus/executors':
+        specifier: workspace:*
+        version: link:../executors
+      '@uranus/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@uranus/prompts':
+        specifier: workspace:*
+        version: link:../prompts
+      '@uranus/providers':
+        specifier: workspace:*
+        version: link:../providers
+      '@uranus/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@uranus/state':
+        specifier: workspace:*
+        version: link:../state
+      '@uranus/vcs':
+        specifier: workspace:*
+        version: link:../vcs
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+      yaml:
+        specifier: ^2.6.0
+        version: 2.9.0
+
   packages/config:
     dependencies:
       '@uranus/core':
@@ -68,6 +123,82 @@ importers:
         specifier: workspace:*
         version: link:../testkit
 
+  packages/executors:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      ajv:
+        specifier: ^8.17.0
+        version: 8.20.0
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/kernel:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/state':
+        specifier: workspace:*
+        version: link:../state
+    devDependencies:
+      '@uranus/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@uranus/events':
+        specifier: workspace:*
+        version: link:../events
+      '@uranus/executors':
+        specifier: workspace:*
+        version: link:../executors
+      '@uranus/prompts':
+        specifier: workspace:*
+        version: link:../prompts
+      '@uranus/providers':
+        specifier: workspace:*
+        version: link:../providers
+      '@uranus/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+      '@uranus/vcs':
+        specifier: workspace:*
+        version: link:../vcs
+
+  packages/prompts:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/providers:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/queue:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/state':
+        specifier: workspace:*
+        version: link:../state
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
   packages/state:
     dependencies:
       '@uranus/core':
@@ -86,6 +217,19 @@ importers:
       vitest:
         specifier: '>=3'
         version: 3.2.7(@types/node@24.13.3)(yaml@2.9.0)
+
+  packages/vcs:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@uranus/executors':
+        specifier: workspace:*
+        version: link:../executors
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
 
 packages:
   '@ampproject/remapping@2.3.0':
@@ -943,6 +1087,12 @@ packages:
         integrity: sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==,
       }
 
+  ajv@8.20.0:
+    resolution:
+      {
+        integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==,
+      }
+
   ansi-regex@5.0.1:
     resolution:
       {
@@ -1069,6 +1219,13 @@ packages:
       {
         integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==,
       }
+
+  commander@13.1.0:
+    resolution:
+      {
+        integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==,
+      }
+    engines: { node: '>=18' }
 
   concat-map@0.0.1:
     resolution:
@@ -1252,6 +1409,12 @@ packages:
     resolution:
       {
         integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==,
+      }
+
+  fast-uri@3.1.5:
+    resolution:
+      {
+        integrity: sha512-gHwA1O9LDIcKunMKhObS/HimwtehO1nPUECKAu5TpKgaO19fcWEl4bliWe1jWxVFvIXztJjjQ4L8XQ1EU9f7Jw==,
       }
 
   fdir@6.5.0:
@@ -1461,6 +1624,12 @@ packages:
     resolution:
       {
         integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==,
+      }
+
+  json-schema-traverse@1.0.0:
+    resolution:
+      {
+        integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==,
       }
 
   json-stable-stringify-without-jsonify@1.0.1:
@@ -1682,6 +1851,13 @@ packages:
         integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==,
       }
     engines: { node: '>=6' }
+
+  require-from-string@2.0.2:
+    resolution:
+      {
+        integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==,
+      }
+    engines: { node: '>=0.10.0' }
 
   resolve-from@4.0.0:
     resolution:
@@ -2482,6 +2658,13 @@ snapshots:
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
 
+  ajv@8.20.0:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      fast-uri: 3.1.5
+      json-schema-traverse: 1.0.0
+      require-from-string: 2.0.2
+
   ansi-regex@5.0.1: {}
 
   ansi-regex@6.2.2: {}
@@ -2543,6 +2726,8 @@ snapshots:
       color-name: 1.1.4
 
   color-name@1.1.4: {}
+
+  commander@13.1.0: {}
 
   concat-map@0.0.1: {}
 
@@ -2679,6 +2864,8 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
+  fast-uri@3.1.5: {}
+
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
       picomatch: 4.0.5
@@ -2786,6 +2973,8 @@ snapshots:
 
   json-schema-traverse@0.4.1: {}
 
+  json-schema-traverse@1.0.0: {}
+
   json-stable-stringify-without-jsonify@1.0.1: {}
 
   keyv@4.5.4:
@@ -2892,6 +3081,8 @@ snapshots:
   prettier@3.9.6: {}
 
   punycode@2.3.1: {}
+
+  require-from-string@2.0.2: {}
 
   resolve-from@4.0.0: {}
 
