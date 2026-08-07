@@ -1,7 +1,7 @@
 {
-  "name": "@uranus/kernel",
+  "name": "@uranus/memory",
   "version": "0.1.0",
-  "description": "Uranus - o ciclo determinístico: sense, select, admit, prepare, execute, verify, integrate, learn, checkpoint.",
+  "description": "Uranus - memoria semantica persistente: Markdown + frontmatter, indice de busca, supersessao e compactacao.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -25,18 +25,11 @@
   },
   "dependencies": {
     "@uranus/core": "workspace:*",
-    "@uranus/state": "workspace:*"
+    "@uranus/state": "workspace:*",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
-    "@uranus/testkit": "workspace:*",
-    "@uranus/context": "workspace:*",
-    "@uranus/memory": "workspace:*",
     "@uranus/events": "workspace:*",
-    "@uranus/executors": "workspace:*",
-    "@uranus/providers": "workspace:*",
-    "@uranus/queue": "workspace:*",
-    "@uranus/vcs": "workspace:*",
-    "@uranus/agents": "workspace:*",
-    "@uranus/prompts": "workspace:*"
+    "@uranus/testkit": "workspace:*"
   }
 }

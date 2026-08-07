@@ -18,6 +18,8 @@
     { "path": "../prompts/tsconfig.build.json" },
     { "path": "../providers/tsconfig.build.json" },
     { "path": "../agents/tsconfig.build.json" },
-    { "path": "../kernel/tsconfig.build.json" }
+    { "path": "../kernel/tsconfig.build.json" },
+    { "path": "../context/tsconfig.build.json" },
+    { "path": "../memory/tsconfig.build.json" }
   ]
 }

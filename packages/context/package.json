@@ -1,0 +1,34 @@
+{
+  "name": "@uranus/context",
+  "version": "0.1.0",
+  "description": "Uranus - reconstrucao automatica de contexto de projeto e empacotamento com orcamento.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "uranus-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "clean": "tsc -b tsconfig.build.json --clean"
+  },
+  "dependencies": {
+    "@uranus/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@uranus/agents": "workspace:*",
+    "@uranus/executors": "workspace:*",
+    "@uranus/testkit": "workspace:*"
+  }
+}

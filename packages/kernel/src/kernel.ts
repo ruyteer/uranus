@@ -593,6 +593,21 @@ export class UranusKernel implements Kernel {
       if (failureCategory !== undefined) {
         this.deps.telemetry.counter('task.failures', 1, { category: failureCategory })
       }
+
+      // Memória: fatos propostos pelo agente passam pela curadoria do
+      // MemoryManager (dedupe, piso de confiança, contradição → evento).
+      // Após um sucesso, a manutenção revalida refs e compacta escopos cheios.
+      if (agentOutput !== undefined && agentOutput.memoryDrafts.length > 0) {
+        await this.deps.memoryManager.remember(agentOutput.memoryDrafts).catch((error: unknown) => {
+          this.deps.logger.warn('Falha ao gravar memória do agente', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          return []
+        })
+      }
+      if (verification?.passed === true) {
+        await this.deps.memoryManager.maintain(this.abort.signal).catch(() => [])
+      }
     }
   }
 

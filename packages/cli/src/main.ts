@@ -147,6 +147,124 @@ task
     })
   })
 
+// ── context / memory ────────────────────────────────────────────────────────
+
+const context = program.command('context').description('Contexto do projeto (ProjectDigest)')
+
+context
+  .command('show')
+  .description('Mostra o digest atual do projeto')
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      const digest = await composition.contextManager.digest(composition.project)
+      if (digest === undefined) {
+        console.log('Sem digest. Rode: uranus context rebuild')
+        return
+      }
+      console.log(digest.summary)
+      console.log('')
+      console.log(
+        `Linguagens : ${digest.languages.map((l) => `${l.name} ${String(Math.round(l.share * 100))}%`).join(', ') || '—'}`,
+      )
+      console.log(`Frameworks : ${digest.frameworks.join(', ') || '—'}`)
+      console.log(
+        `Testes     : ${digest.tests.runner ?? '—'}${digest.tests.command === undefined ? '' : ` (${digest.tests.command})`} · ${String(digest.tests.count ?? 0)} arquivo(s)`,
+      )
+      console.log(`CI         : ${digest.ci.provider ?? '—'}`)
+      console.log(
+        `Banco      : ${[digest.database.engine, digest.database.orm].filter(Boolean).join(' + ') || '—'}`,
+      )
+      console.log(`Convenções : ${digest.conventions.join(', ') || '—'}`)
+      console.log(`Freshness  : ${digest.freshness.slice(0, 16)}…`)
+    })
+  })
+
+context
+  .command('rebuild')
+  .description('Reconstrói o digest do zero (ignora o cache)')
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      composition.contextManager.invalidate()
+      const digest = await composition.contextManager.bootstrap(
+        composition.project,
+        new AbortController().signal,
+      )
+      console.log('Digest reconstruído.')
+      console.log(digest.summary)
+    })
+  })
+
+const memory = program.command('memory').description('Memória persistente do projeto')
+
+memory
+  .command('list')
+  .description('Lista registros ativos de memória')
+  .option('--scope <scope>', 'filtra por escopo')
+  .action(async (options: { scope?: string }) => {
+    await withComposition(async ({ composition }) => {
+      const records = await composition.memoryStore.query({
+        ...(options.scope === undefined ? {} : { scopes: [options.scope as never] }),
+        limit: 100,
+      })
+      if (records.length === 0) {
+        console.log('Nenhuma memória registrada.')
+        return
+      }
+      for (const record of records) {
+        console.log(
+          `${record.id}  [${record.scope.padEnd(12)}] conf=${record.confidence.toFixed(2)}  ${record.title}`,
+        )
+      }
+      console.log(`\nArquivos em .uranus/memory/ — edite à vontade; o Uranus respeita a edição.`)
+    })
+  })
+
+memory
+  .command('show <idOrKey>')
+  .description('Mostra um registro completo')
+  .action(async (idOrKey: string) => {
+    await withComposition(async ({ composition }) => {
+      const { asMemoryId } = await import('@uranus/core')
+      let record
+      try {
+        record = await composition.memoryStore.get(asMemoryId(idOrKey))
+      } catch {
+        const all = await composition.memoryStore.query({ limit: 500 })
+        record = all.find((r) => r.key === idOrKey)
+      }
+      if (record === undefined) {
+        console.error('Registro não encontrado.')
+        process.exitCode = 1
+        return
+      }
+      console.log(`# ${record.title}`)
+      console.log(
+        `escopo=${record.scope} chave=${record.key} confiança=${String(record.confidence)}`,
+      )
+      console.log(`fonte=${record.source.kind}:${record.source.ref}`)
+      console.log('')
+      console.log(record.body)
+    })
+  })
+
+memory
+  .command('compact')
+  .description('Revalida referências e compacta escopos acima do orçamento')
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      const reports = await composition.deps.memoryManager.maintain(new AbortController().signal)
+      if (reports.length === 0) {
+        console.log('Nada a compactar.')
+        return
+      }
+      for (const report of reports) {
+        console.log(
+          `${report.scope}: ${String(report.before)} → ${String(report.after)} registros (${String(report.merged.length)} fundidos)`,
+        )
+      }
+    })
+  })
+
 // ── start / status / logs ───────────────────────────────────────────────────
 
 program

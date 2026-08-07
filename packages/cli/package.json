@@ -29,7 +29,9 @@
   "dependencies": {
     "@uranus/agents": "workspace:*",
     "@uranus/config": "workspace:*",
+    "@uranus/context": "workspace:*",
     "@uranus/core": "workspace:*",
+    "@uranus/memory": "workspace:*",
     "@uranus/events": "workspace:*",
     "@uranus/executors": "workspace:*",
     "@uranus/kernel": "workspace:*",

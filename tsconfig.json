@@ -13,6 +13,8 @@
     { "path": "packages/providers/tsconfig.build.json" },
     { "path": "packages/agents/tsconfig.build.json" },
     { "path": "packages/kernel/tsconfig.build.json" },
+    { "path": "packages/context/tsconfig.build.json" },
+    { "path": "packages/memory/tsconfig.build.json" },
     { "path": "packages/cli/tsconfig.build.json" }
   ]
 }

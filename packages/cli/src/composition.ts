@@ -26,15 +26,20 @@ import {
   DefaultRecoveryManager,
   FileCheckpointManager,
   InMemoryHumanGate,
-  MinimalContextPacker,
-  NoopMemoryManager,
-  NoopMemoryStore,
   SimpleScheduler,
-  StaticContextManager,
   InMemoryTelemetry,
   UranusKernel,
   type KernelConfig,
 } from '@uranus/kernel'
+import {
+  DefaultContextManager,
+  DefaultContextPacker,
+  codeSource,
+  digestSource,
+  memorySource,
+  readmeSource,
+} from '@uranus/context'
+import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
 
 export interface CompositionOptions {
   readonly projectDir: string
@@ -51,6 +56,8 @@ export interface Composition {
   readonly project: ProjectRef
   readonly state: StateStore
   readonly eventStore: JsonlEventStore
+  readonly contextManager: DefaultContextManager
+  readonly memoryStore: MarkdownMemoryStore
   close(): Promise<void>
 }
 
@@ -180,11 +187,32 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     logger,
   })
 
-  const contextManager = new StaticContextManager({
-    testsRunner: 'pnpm',
-    testsCommand: 'pnpm test',
+  // Contexto real (Fase 3): digest automático com cache por FreshnessKey.
+  const contextManager = new DefaultContextManager({ shell, clock, logger, events })
+  await contextManager.ensureFresh(project, new AbortController().signal)
+
+  // Memória real (Fase 3): Markdown + frontmatter em .uranus/memory/.
+  const memoryStore = new MarkdownMemoryStore({
+    dir: join(uranusDir, options.config.memory.dir),
+    projectRootDir: rootDir,
+    projectId: project.id,
+    clock,
+    logger,
+    indexPath: join(uranusDir, 'cache', 'memory-index.db'),
   })
-  await contextManager.bootstrap(project, new AbortController().signal)
+  const memoryManager = new DefaultMemoryManager({
+    store: memoryStore,
+    events,
+    logger,
+    maxRecordsPerScope: options.config.memory.maxRecordsPerScope,
+    minConfidence: options.config.memory.minConfidence,
+  })
+
+  const packer = new DefaultContextPacker({ clock, logger })
+  packer.addSource(digestSource(contextManager))
+  packer.addSource(memorySource(memoryStore))
+  packer.addSource(codeSource())
+  packer.addSource(readmeSource())
 
   const deps: KernelDeps = {
     clock,
@@ -197,10 +225,10 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     agentRuntime,
     prompts,
     providers,
-    context: new MinimalContextPacker(clock),
+    context: packer,
     contextManager,
-    memory: new NoopMemoryStore(),
-    memoryManager: new NoopMemoryManager(),
+    memory: memoryStore,
+    memoryManager,
     shell,
     sandbox,
     verifier,
@@ -248,7 +276,10 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     project,
     state,
     eventStore,
+    contextManager,
+    memoryStore,
     async close(): Promise<void> {
+      await memoryStore.close()
       await eventStore.close()
       state.close()
     },

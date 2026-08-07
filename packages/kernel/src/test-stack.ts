@@ -19,15 +19,11 @@ import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
 import { DefaultProviderRegistry } from '@uranus/providers'
 import { DefaultAgentRegistry, DefaultAgentRuntime, EXECUTOR_SPEC } from '@uranus/agents'
 import { ScriptedProvider, type ScriptedBehavior } from '@uranus/testkit'
+import { DefaultContextPacker, codeSource, digestSource } from '@uranus/context'
+import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
 import { UranusKernel } from './kernel.js'
 import { SimpleScheduler } from './scheduler.js'
-import { MinimalContextPacker } from './support/minimal-context.js'
-import {
-  InMemoryTelemetry,
-  NoopMemoryManager,
-  NoopMemoryStore,
-  StaticContextManager,
-} from './support/stubs.js'
+import { InMemoryTelemetry, StaticContextManager } from './support/stubs.js'
 import { DefaultBudgetGuard } from './guards/budget-guard.js'
 import { DefaultPermissionBroker } from './guards/permission-broker.js'
 import { InMemoryHumanGate } from './guards/human-gate.js'
@@ -49,6 +45,7 @@ export interface TestStack {
   readonly eventStore: JsonlEventStore
   readonly provider: ScriptedProvider
   readonly telemetry: InMemoryTelemetry
+  readonly memoryStore: MarkdownMemoryStore
   enqueue(task: Partial<Task> & { acceptance: Task['acceptance'] }): Promise<Task>
   close(): Promise<void>
 }
@@ -135,6 +132,26 @@ export async function makeTestStack(
   await contextManager.bootstrap(project, new AbortController().signal)
   const telemetry = new InMemoryTelemetry()
 
+  // Packer e memória REAIS (Fase 3): o kernel de teste usa a mesma pilha que a
+  // CLI — o que o teste de integração exercita é o que roda em produção.
+  const packer = new DefaultContextPacker({ clock, logger })
+  packer.addSource(digestSource(contextManager))
+  packer.addSource(codeSource())
+  const memoryStore = new MarkdownMemoryStore({
+    dir: join(uranusDir, 'memory'),
+    projectRootDir: repoDir,
+    projectId: project.id,
+    clock,
+    logger,
+  })
+  const memoryManager = new DefaultMemoryManager({
+    store: memoryStore,
+    events,
+    logger,
+    maxRecordsPerScope: 50,
+    minConfidence: 0.3,
+  })
+
   const deps: KernelDeps = {
     clock,
     logger,
@@ -146,10 +163,10 @@ export async function makeTestStack(
     agentRuntime,
     prompts,
     providers,
-    context: new MinimalContextPacker(clock),
+    context: packer,
     contextManager,
-    memory: new NoopMemoryStore(),
-    memoryManager: new NoopMemoryManager(),
+    memory: memoryStore,
+    memoryManager,
     shell,
     sandbox,
     verifier,
@@ -195,6 +212,7 @@ export async function makeTestStack(
     eventStore,
     provider,
     telemetry,
+    memoryStore,
     async enqueue(partial): Promise<Task> {
       const now = clock.now()
       const task: Task = {
@@ -219,6 +237,7 @@ export async function makeTestStack(
       return task
     },
     async close(): Promise<void> {
+      await memoryStore.close()
       await eventStore.close()
       state.close()
     },

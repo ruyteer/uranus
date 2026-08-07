@@ -53,6 +53,9 @@ importers:
       '@uranus/config':
         specifier: workspace:*
         version: link:../config
+      '@uranus/context':
+        specifier: workspace:*
+        version: link:../context
       '@uranus/core':
         specifier: workspace:*
         version: link:../core
@@ -65,6 +68,9 @@ importers:
       '@uranus/kernel':
         specifier: workspace:*
         version: link:../kernel
+      '@uranus/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@uranus/prompts':
         specifier: workspace:*
         version: link:../prompts
@@ -99,6 +105,22 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/context:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@uranus/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@uranus/executors':
+        specifier: workspace:*
+        version: link:../executors
       '@uranus/testkit':
         specifier: workspace:*
         version: link:../testkit
@@ -148,12 +170,18 @@ importers:
       '@uranus/agents':
         specifier: workspace:*
         version: link:../agents
+      '@uranus/context':
+        specifier: workspace:*
+        version: link:../context
       '@uranus/events':
         specifier: workspace:*
         version: link:../events
       '@uranus/executors':
         specifier: workspace:*
         version: link:../executors
+      '@uranus/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@uranus/prompts':
         specifier: workspace:*
         version: link:../prompts
@@ -169,6 +197,25 @@ importers:
       '@uranus/vcs':
         specifier: workspace:*
         version: link:../vcs
+
+  packages/memory:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/state':
+        specifier: workspace:*
+        version: link:../state
+      yaml:
+        specifier: ^2.6.0
+        version: 2.9.0
+    devDependencies:
+      '@uranus/events':
+        specifier: workspace:*
+        version: link:../events
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
 
   packages/prompts:
     dependencies:
