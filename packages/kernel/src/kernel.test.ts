@@ -207,6 +207,41 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
     })
   }, 60_000)
 
+  it('orçamento insuficiente bloqueia a task ANTES de gastar (INV-7)', async () => {
+    await withTempDir(async (dir) => {
+      createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+      // Orçamento do run (0.5 USD) menor que o custo máximo do agente (2 USD):
+      // a admissão recusa a priori — nenhuma sessão de provider é aberta.
+      const stack = await makeTestStack(dir, [{ writes: { 'src/a.ts': 'a' } }], {
+        budgetUsd: 0.5,
+      })
+      try {
+        const task = await stack.enqueue({
+          title: 'Cara demais',
+          acceptance: artifactAcceptance('src/a.ts', 'a'),
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const final = await stack.state.tasks.find(task.id)
+        expect(final?.state).toBe('blocked')
+        expect(final?.blockReason?.kind).toBe('budget')
+
+        // A recusa foi ANTES de gastar: o provider nunca foi chamado.
+        expect(stack.provider.sessions).toHaveLength(0)
+        expect(stack.kernel.status().budget.run.usedCost.micros).toBe(0)
+
+        const names: string[] = []
+        for await (const event of stack.eventStore.read(1)) names.push(event.name)
+        expect(names).toContain('BudgetExhausted')
+        expect(names).toContain('TaskBlocked')
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 60_000)
+
   it('duas tasks em sequência; fila drena e o kernel para sozinho', async () => {
     await withTempDir(async (dir) => {
       createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
