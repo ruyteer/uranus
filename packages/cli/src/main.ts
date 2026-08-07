@@ -240,15 +240,21 @@ program
     console.log('Ambiente:')
     check('node', () => process.version)
     check('git', () => execFileSync('git', ['--version'], { encoding: 'utf8' }))
-    check('claude', () =>
-      execFileSync('claude', ['--version'], {
-        encoding: 'utf8',
-        shell: process.platform === 'win32',
-      }),
+    // Mesmo localizador que o provider usa em runtime: o doctor testa o que o
+    // kernel vai de fato executar, não apenas o PATH do shell atual.
+    const { locateClaudeBinary } = await import('@uranus/providers')
+    const claudeBin = locateClaudeBinary()
+    check(`claude (${claudeBin})`, () =>
+      execFileSync(claudeBin, ['--version'], { encoding: 'utf8' }),
     )
-    check('gh', () =>
-      execFileSync('gh', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' }),
-    )
+    try {
+      const { execSync } = await import('node:child_process')
+      execSync('gh --version', { encoding: 'utf8', stdio: 'pipe' })
+      console.log('  OK   gh')
+    } catch {
+      console.log('  AVISO gh ausente — PRs não serão abertos; commits ficam na branch local.')
+      console.log('        Instale com: winget install GitHub.cli && gh auth login')
+    }
 
     const loaded = await loadConfig({ projectDir: process.cwd() })
     if (loaded.ok) {

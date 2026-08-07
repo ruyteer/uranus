@@ -14,6 +14,7 @@ import type {
 } from '@uranus/core'
 import { EMPTY_USAGE, estimateTokens, newSessionId, usd } from '@uranus/core'
 import { renderContextPack } from '../render-context.js'
+import { locateClaudeBinary } from './locate.js'
 import { parseClaudeLine, type StreamParseState } from './stream.js'
 
 export interface ClaudeCodeProviderOptions {
@@ -61,7 +62,7 @@ export class ClaudeCodeProvider implements Provider {
   constructor(options: ClaudeCodeProviderOptions) {
     this.shell = options.shell
     this.logger = options.logger.child({ component: 'claude-code' })
-    this.binary = options.binary ?? 'claude'
+    this.binary = locateClaudeBinary(options.binary)
     this.defaultModel = options.defaultModel ?? 'sonnet'
     this.extraArgs = options.extraArgs ?? []
   }

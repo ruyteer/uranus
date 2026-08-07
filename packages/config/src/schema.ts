@@ -50,6 +50,8 @@ export const budgetConfigSchema = z.object({
 
 export const providerConfigSchema = z.object({
   mode: z.enum(['cli', 'api']).default('cli'),
+  /** Caminho do binário do CLI quando não está no PATH (ex.: instalação local). */
+  binary: z.string().optional(),
   model: z.string().optional(),
   /** Versão fixada do binário/CLI — defesa contra drift de API (R5). */
   pinnedVersion: z.string().optional(),

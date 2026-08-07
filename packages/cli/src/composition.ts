@@ -130,6 +130,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
       new ClaudeCodeProvider({
         shell,
         logger,
+        ...(providerConfig?.binary === undefined ? {} : { binary: providerConfig.binary }),
         ...(providerConfig?.model === undefined ? {} : { defaultModel: providerConfig.model }),
         extraArgs: providerConfig?.extraArgs ?? [],
       }),
