@@ -487,11 +487,31 @@ export class UranusKernel implements Kernel {
   }
 
   private async admit(task: Task): Promise<Result<{ agent: AgentSpec; provider: Provider }>> {
-    const provider = this.deps.providers.resolve({ preferred: this.config.providerId })
-    if (!provider.ok) return provider
+    // Duas passadas de propósito. Escolher o agente exige conhecer as
+    // capacidades de algum provider; rotear por agente exige conhecer o agente.
+    // A primeira passada usa o provider padrão só para resolver o agente; a
+    // segunda roteia de verdade, agora sabendo o papel e o tier.
+    const base = this.deps.providers.resolve({ preferred: this.config.providerId })
+    if (!base.ok) return base
 
-    const agent = this.deps.agents.resolve(task, provider.value.capabilities)
+    const agent = this.deps.agents.resolve(task, base.value.capabilities)
     if (!agent.ok) return agent
+
+    // Sem `preferred` aqui de propósito: `config.providerId` é o PADRÃO, não
+    // uma escolha explícita para esta chamada. Passá-lo como preferido faria
+    // ele vencer o roteamento por papel e anularia o `byAgent` por completo.
+    const routed = this.deps.providers.resolve({
+      agent: agent.value.name,
+      ...(agent.value.model?.tier === undefined ? {} : { tier: agent.value.model.tier }),
+      ...(agent.value.requires === undefined ? {} : { capabilities: agent.value.requires }),
+    })
+    if (!routed.ok) return routed
+    if (routed.value.id !== base.value.id) {
+      this.deps.logger.debug('Provider roteado por papel/tier', {
+        agent: agent.value.name,
+        provider: routed.value.id,
+      })
+    }
 
     // INV-7: admissão a priori, com estimativa pessimista.
     this.deps.budget.resetTask()
@@ -521,7 +541,7 @@ export class UranusKernel implements Kernel {
       )
     }
 
-    return ok({ agent: agent.value, provider: provider.value })
+    return ok({ agent: agent.value, provider: routed.value })
   }
 
   private async executeTask(

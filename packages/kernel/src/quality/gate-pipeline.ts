@@ -128,8 +128,12 @@ export class GatePipeline {
       return undefined
     }
 
+    // Roteia pelo NOME DO GATE: é aqui que um modelo local barato entra sem
+    // que o Executor deixe de usar o modelo forte. Sem `preferred` — ver a
+    // nota em `UranusKernel.admit`.
     const provider = this.options.providers.resolve({
-      preferred: this.options.providerId,
+      agent: spec.name,
+      ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
       capabilities: spec.requires ?? {},
     })
     if (!provider.ok) {

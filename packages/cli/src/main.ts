@@ -298,6 +298,116 @@ program
     })
   })
 
+// ── providers ───────────────────────────────────────────────────────────────
+
+const provider = program.command('provider').description('Modelos e roteamento')
+
+provider
+  .command('list')
+  .description('Lista providers registrados e o roteamento por papel')
+  .action(async () => {
+    await withComposition(({ composition }) => {
+      const registered = composition.deps.providers.list()
+      if (registered.length === 0) {
+        console.log('Nenhum provider registrado.')
+        return Promise.resolve()
+      }
+
+      console.log('Providers:')
+      for (const entry of registered) {
+        const caps = entry.capabilities
+        console.log(
+          `  ${entry.id.padEnd(14)} ${entry.kind.padEnd(4)} ${
+            caps.nativeFileEditing ? 'edita arquivos' : 'ferramentas via Uranus'
+          } · contexto ${String(caps.maxContextTokens)} · ${String(caps.maxConcurrentSessions)} sessão(ões)`,
+        )
+      }
+
+      const byAgent = composition.config.providers.byAgent
+      const byTier = composition.config.providers.byTier
+      if (Object.keys(byAgent).length > 0 || Object.keys(byTier).length > 0) {
+        console.log('\nRoteamento:')
+        for (const [agent, id] of Object.entries(byAgent)) {
+          console.log(`  agente ${agent.padEnd(12)} → ${id}`)
+        }
+        for (const [tier, id] of Object.entries(byTier)) {
+          console.log(`  tier   ${tier.padEnd(12)} → ${id}`)
+        }
+      }
+      console.log(`\nPadrão: ${composition.config.providers.default}`)
+      return Promise.resolve()
+    })
+  })
+
+provider
+  .command('test [providerId]')
+  .description('Testa a conectividade dos providers (health check)')
+  .action(async (providerId?: string) => {
+    await withComposition(async ({ composition }) => {
+      const alvos = composition.deps.providers
+        .list()
+        .filter((entry) => providerId === undefined || entry.id === providerId)
+
+      if (alvos.length === 0) {
+        console.error(
+          providerId === undefined
+            ? 'Nenhum provider registrado.'
+            : `Provider "${providerId}" não registrado.`,
+        )
+        process.exitCode = 1
+        return
+      }
+
+      let algumFalhou = false
+      for (const entry of alvos) {
+        const report = await entry.health(new AbortController().signal)
+        console.log(
+          `  ${report.healthy ? 'OK   ' : 'FALHA'} ${entry.id.padEnd(14)} ${report.detail}`,
+        )
+        if (!report.healthy) algumFalhou = true
+      }
+      if (algumFalhou) process.exitCode = 1
+    })
+  })
+
+provider
+  .command('why <agente>')
+  .description('Mostra qual provider seria escolhido para um agente e por quê')
+  .action(async (agente: string) => {
+    await withComposition(async ({ composition }) => {
+      const spec = composition.deps.agents.get(agente)
+      if (spec === undefined) {
+        console.error(
+          `Agente "${agente}" não registrado. Disponíveis: ${composition.deps.agents
+            .list()
+            .map((s) => s.name)
+            .join(', ')}`,
+        )
+        process.exitCode = 1
+        return
+      }
+      const { ProviderRouter } = await import('@uranus/providers')
+      if (composition.deps.providers instanceof ProviderRouter) {
+        console.log(
+          composition.deps.providers.explain({
+            agent: agente,
+            ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
+          }),
+        )
+      }
+      const resolved = composition.deps.providers.resolve({
+        agent: agente,
+        ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
+        ...(spec.requires === undefined ? {} : { capabilities: spec.requires }),
+      })
+      console.log(
+        resolved.ok
+          ? `\nEscolhido: ${resolved.value.id}`
+          : `\nNenhum provider satisfaz: ${resolved.error.message}`,
+      )
+    })
+  })
+
 // ── context / memory ────────────────────────────────────────────────────────
 
 const context = program.command('context').description('Contexto do projeto (ProjectDigest)')
@@ -526,10 +636,29 @@ program
     }
 
     const loaded = await loadConfig({ projectDir: process.cwd() })
-    if (loaded.ok) {
-      console.log(`  OK   config: projeto "${loaded.value.config.project.name}"`)
-    } else {
+    if (!loaded.ok) {
       console.log(`  FALHA config: ${loaded.error.message.split('\n')[0] ?? ''}`)
+      process.exitCode = 1
+      return
+    }
+    console.log(`  OK   config: projeto "${loaded.value.config.project.name}"`)
+
+    // Providers configurados: conectividade real, não só "existe no PATH".
+    const composition = await compose({ projectDir: process.cwd(), config: loaded.value.config })
+    try {
+      const registered = composition.deps.providers.list()
+      if (registered.length > 0) {
+        console.log('\nProviders:')
+        for (const entry of registered) {
+          const report = await entry.health(new AbortController().signal)
+          console.log(
+            `  ${report.healthy ? 'OK   ' : 'FALHA'} ${entry.id.padEnd(14)} ${report.detail.split('\n')[0] ?? ''}`,
+          )
+          if (!report.healthy) process.exitCode = 1
+        }
+      }
+    } finally {
+      await composition.close()
     }
   })
 

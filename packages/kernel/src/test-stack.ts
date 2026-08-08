@@ -1,5 +1,13 @@
 ﻿import { join } from 'node:path'
-import type { Check, GatePolicy, KernelDeps, ProjectRef, Task } from '@uranus/core'
+import type {
+  Check,
+  GatePolicy,
+  KernelDeps,
+  ProjectRef,
+  Provider,
+  ProviderRegistry,
+  Task,
+} from '@uranus/core'
 import {
   DEFAULT_GATE_POLICY,
   createLogger,
@@ -81,6 +89,10 @@ export interface TestStackOptions {
   readonly gates?: readonly string[]
   readonly gatePolicy?: GatePolicy
   readonly escalationAgent?: string
+  /** Usa um provider real (ex.: `ApiProvider`) no lugar do roteirizado (Fase 8). */
+  readonly providerOverride?: Provider
+  /** Registry/roteador próprio, para testar roteamento por papel. */
+  readonly providerRegistry?: ProviderRegistry
 }
 
 export async function makeTestStack(
@@ -142,9 +154,15 @@ export async function makeTestStack(
   }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
 
-  const provider = new ScriptedProvider(behaviors)
-  const providers = new DefaultProviderRegistry({ now: () => clock.now() })
-  providers.register(provider)
+  const scripted = new ScriptedProvider(behaviors)
+  const provider = options.providerOverride ?? scripted
+  const providers =
+    options.providerRegistry ??
+    (() => {
+      const registry = new DefaultProviderRegistry({ now: () => clock.now() })
+      registry.register(provider)
+      return registry
+    })()
 
   const budget = new DefaultBudgetGuard({
     run: {
@@ -319,7 +337,9 @@ export async function makeTestStack(
     project,
     state,
     eventStore,
-    provider,
+    // Sempre o roteirizado: os testes inspecionam `.sessions` dele. Quando há
+    // `providerOverride`, quem executa é o override — este fica sem sessões.
+    provider: scripted,
     telemetry,
     memoryStore,
     backlog,

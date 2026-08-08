@@ -124,6 +124,14 @@ export interface ProviderRequirements {
   readonly capabilities?: Partial<ProviderCapabilities>
   readonly preferred?: string
   readonly tier?: 'fast' | 'balanced' | 'deep'
+  /**
+   * Papel que vai usar o provider (`executor`, `reviewer`, …).
+   *
+   * Permite rotear por agente: modelo forte no Executor, onde a edição
+   * multi-turno com ferramentas é difícil; modelo local nos gates, onde uma
+   * passada com saída estruturada basta.
+   */
+  readonly agent?: string
 }
 
 export interface ProviderRegistry {

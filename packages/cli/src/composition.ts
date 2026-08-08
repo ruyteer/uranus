@@ -1,4 +1,4 @@
-﻿import { join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Clock, KernelDeps, Logger, ProjectRef, Provider, UranusEvent } from '@uranus/core'
 import { newProjectId, systemClock, createLogger, usd } from '@uranus/core'
 import type { UranusConfig } from '@uranus/config'
@@ -19,7 +19,8 @@ import {
 import { GitAdapter, GitHubHost } from '@uranus/vcs'
 import { SqlTaskQueue } from '@uranus/queue'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
-import { ClaudeCodeProvider, DefaultProviderRegistry } from '@uranus/providers'
+import { DefaultProviderRegistry, ProviderRouter } from '@uranus/providers'
+import { registerConfiguredProviders } from './providers-setup.js'
 import { fileURLToPath } from 'node:url'
 import {
   DefaultAgentRegistry,
@@ -195,17 +196,27 @@ export async function compose(options: CompositionOptions): Promise<Composition>
   if (options.providerOverride !== undefined) {
     providers.register(options.providerOverride)
   } else {
-    const providerConfig = options.config.providers.entries['claude-code']
-    providers.register(
-      new ClaudeCodeProvider({
-        shell,
-        logger,
-        ...(providerConfig?.binary === undefined ? {} : { binary: providerConfig.binary }),
-        ...(providerConfig?.model === undefined ? {} : { defaultModel: providerConfig.model }),
-        extraArgs: providerConfig?.extraArgs ?? [],
-      }),
-    )
+    await registerConfiguredProviders({
+      config: options.config,
+      registry: providers,
+      shell,
+      clock,
+      logger,
+    })
   }
+
+  // Roteamento por papel e por tier (Fase 8): permite modelo forte no Executor
+  // e modelo local nos gates, com a mesma interface de Provider.
+  const router = new ProviderRouter(
+    providers,
+    {
+      byAgent: options.config.providers.byAgent,
+      byTier: options.config.providers.byTier,
+      default: options.providerOverride?.id ?? options.config.providers.default,
+      fallback: options.config.providers.fallback,
+    },
+    logger,
+  )
 
   const budgetConfig = options.config.budget
   const budget = new DefaultBudgetGuard(
@@ -287,7 +298,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     agents,
     agentRuntime,
     prompts,
-    providers,
+    providers: router,
     context: packer,
     contextManager,
     memory: memoryStore,
@@ -342,7 +353,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     project,
     agents,
     agentRuntime,
-    providers,
+    providers: router,
     context: packer,
     queue,
     tasks: state.tasks,
@@ -366,7 +377,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     project,
     agents,
     agentRuntime,
-    providers,
+    providers: router,
     context: packer,
     events,
     clock,

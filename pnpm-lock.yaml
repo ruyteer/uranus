@@ -260,6 +260,9 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@uranus/executors':
+        specifier: workspace:*
+        version: link:../executors
       '@uranus/testkit':
         specifier: workspace:*
         version: link:../testkit

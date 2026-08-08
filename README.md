@@ -7,9 +7,10 @@ Gemini) para trabalhar continuamente em projetos de software sob supervisão hum
 raciocínio de controle — o que fazer, em que ordem, com qual contexto, se deu certo — pertence a
 código determinístico, não ao modelo.
 
-**Status:** Fase 5 de 9 concluída. Funciona de ponta a ponta: item de backlog em prosa → plano
+**Status:** Fases 1–5 e 8 concluídas. Funciona de ponta a ponta: item de backlog em prosa → plano
 validado → tasks → implementação em worktree isolado → verificação por testes → revisão de
-qualidade → commit → PR, com recuperação exata após interrupção.
+qualidade → commit → PR, com recuperação exata após interrupção. Roda com Claude Code ou com
+**modelos locais** (Ollama, LM Studio, llama.cpp) e serviços compatíveis com a API da OpenAI.
 
 ---
 
@@ -21,6 +22,7 @@ qualidade → commit → PR, com recuperação exata após interrupção.
 - [Referência de comandos](#referência-de-comandos)
 - [Como escrever uma task](#como-escrever-uma-task)
 - [Configuração](#configuração)
+- [Modelos locais e outros providers](#modelos-locais-e-outros-providers)
 - [Como funciona](#como-funciona)
 - [Agentes](#agentes)
 - [Solução de problemas](#solução-de-problemas)
@@ -63,9 +65,10 @@ Detalhes em [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md).
 
 ## Instalação
 
-**Requisitos:** Node ≥ 22, git ≥ 2.20, e o [Claude Code CLI](https://claude.com/claude-code)
-autenticado. O `gh` (GitHub CLI) é opcional — sem ele, os commits ficam na branch local em vez de
-virarem PR.
+**Requisitos:** Node ≥ 22, git ≥ 2.20, e **um provider de modelo**: o
+[Claude Code CLI](https://claude.com/claude-code) autenticado, ou qualquer servidor compatível com
+a API da OpenAI — inclusive local (ver [Modelos locais](#modelos-locais-e-outros-providers)).
+O `gh` (GitHub CLI) é opcional — sem ele, os commits ficam na branch local em vez de virarem PR.
 
 ```bash
 git clone https://github.com/ruyteer/uranus.git && cd uranus && pnpm install && pnpm build
@@ -365,6 +368,113 @@ Também dá para sobrescrever por variável de ambiente
 
 ---
 
+## Modelos locais e outros providers
+
+O Uranus não depende do Claude Code. Qualquer servidor compatível com a API da OpenAI funciona —
+o que inclui **Ollama, LM Studio, llama.cpp e vLLM rodando na sua máquina**, além de OpenAI,
+OpenRouter, Groq e Gemini.
+
+### Dois modos de provider
+
+|                          | `cli` (Claude Code) | `api` (todos os outros)          |
+| ------------------------ | ------------------- | -------------------------------- |
+| Quem edita os arquivos   | o CLI               | **o Uranus**                     |
+| Permissão verificada     | ao montar as flags  | **a cada chamada de ferramenta** |
+| Fonte de verdade do diff | `git diff`          | `git diff` (igual)               |
+
+O modo `api` é **estritamente mais seguro**: como o laço de ferramentas roda dentro do Uranus, uma
+escrita fora do escopo é barrada antes de acontecer, em vez de ser descoberta depois pelo `DiffCheck`.
+
+### Configurando um modelo local
+
+```yaml
+providers:
+  default: ollama
+  entries:
+    ollama:
+      mode: api
+      preset: ollama
+      model: qwen2.5-coder:14b
+      # baseUrl: http://127.0.0.1:11434/v1   # o padrão
+```
+
+Presets disponíveis: `ollama`, `lmstudio`, `local` (qualquer servidor OpenAI-compatible),
+`openai-gpt`, `openrouter`, `groq`, `gemini`.
+
+**O modelo precisa suportar function calling.** Isso não é opcional: sem ferramentas, o agente não
+tem como ler nem editar arquivo nenhum. Muitos modelos populares não suportam — o `uranus doctor`
+detecta e avisa antes de você gastar uma task descobrindo:
+
+```bash
+uranus provider test
+```
+
+Se aparecer _"não suporta ferramentas"_, troque por um modelo com suporte a tools —
+`qwen2.5-coder`, `llama3.1`, `mistral-nemo` e `firefunction` funcionam.
+
+### Chaves de API nunca vão na configuração
+
+```yaml
+providers:
+  entries:
+    openrouter:
+      mode: api
+      preset: openrouter
+      model: anthropic/claude-sonnet-4
+      apiKeyRef: env:OPENROUTER_API_KEY # resolvida no momento do uso
+```
+
+O valor é lido da variável de ambiente quando necessário e registrado para redação automática —
+ele não aparece em log, evento ou saída de comando.
+
+### O híbrido: forte onde importa, local onde basta
+
+Esta é a configuração que costuma fazer mais sentido. O Executor faz edição multi-turno com
+ferramentas, que é exatamente onde modelos pequenos quebram. Já os gates de qualidade são uma
+passada com saída estruturada — bem mais tratável localmente.
+
+```yaml
+providers:
+  default: claude-code
+  entries:
+    claude-code: { mode: cli, model: sonnet }
+    ollama: { mode: api, preset: ollama, model: qwen2.5-coder:14b }
+  byAgent:
+    executor: claude-code # o trabalho difícil
+    reviewer: ollama # revisão: custo zero
+    security: ollama
+  byTier:
+    deep: claude-code
+    fast: ollama
+```
+
+Confira quem seria escolhido para cada papel, sem gastar nada:
+
+```bash
+uranus provider why reviewer
+```
+
+### Failover
+
+Se um provider falha repetidamente, o circuito abre e o roteador pula para o próximo sem que a
+task falhe:
+
+```yaml
+providers:
+  default: openrouter
+  fallback: [groq, ollama]
+```
+
+### Comandos
+
+| Comando                        | O que faz                                                         |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `uranus provider list`         | Providers registrados, modo de cada um e o roteamento ativo.      |
+| `uranus provider test [id]`    | Health check real: conectividade, modelo e suporte a ferramentas. |
+| `uranus provider why <agente>` | Mostra qual provider seria escolhido para um agente e por quê.    |
+
+---
+
 ## Como funciona
 
 ### O ciclo do kernel
@@ -491,24 +601,24 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 
 ### Pacotes
 
-| Pacote              | Responsabilidade                                                     |
-| ------------------- | -------------------------------------------------------------------- |
-| `@uranus/core`      | Tipos, contratos e domínio. Raiz do grafo, sem I/O.                  |
-| `@uranus/config`    | Configuração em camadas com schema.                                  |
-| `@uranus/events`    | Barramento tipado e event log JSONL segmentado.                      |
-| `@uranus/state`     | SQLite, migrations, repositórios, leases com TTL, snapshot atômico.  |
-| `@uranus/executors` | Shell cross-platform, sandbox por worktree, `Verifier`, diagnóstico. |
-| `@uranus/vcs`       | Adaptador git e host GitHub.                                         |
-| `@uranus/queue`     | Fila persistente com leases por arquivo e dependências.              |
-| `@uranus/scheduler` | 14 políticas ponderadas com explicação auditável.                    |
-| `@uranus/backlog`   | Backlog e validação determinística de planos.                        |
-| `@uranus/context`   | Digest automático do projeto e empacotamento com orçamento.          |
-| `@uranus/memory`    | Memória em Markdown com supersessão e invalidação por checksum.      |
-| `@uranus/prompts`   | Templates versionados com render estrito.                            |
-| `@uranus/providers` | Adaptador Claude Code headless e registry com circuit breaker.       |
-| `@uranus/agents`    | Runtime de agentes e catálogo declarativo.                           |
-| `@uranus/kernel`    | O ciclo, planejamento, cadeia de qualidade, recuperação.             |
-| `@uranus/cli`       | Interface de terminal e composition root.                            |
+| Pacote              | Responsabilidade                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `@uranus/core`      | Tipos, contratos e domínio. Raiz do grafo, sem I/O.                                                              |
+| `@uranus/config`    | Configuração em camadas com schema.                                                                              |
+| `@uranus/events`    | Barramento tipado e event log JSONL segmentado.                                                                  |
+| `@uranus/state`     | SQLite, migrations, repositórios, leases com TTL, snapshot atômico.                                              |
+| `@uranus/executors` | Shell cross-platform, sandbox por worktree, `Verifier`, diagnóstico.                                             |
+| `@uranus/vcs`       | Adaptador git e host GitHub.                                                                                     |
+| `@uranus/queue`     | Fila persistente com leases por arquivo e dependências.                                                          |
+| `@uranus/scheduler` | 14 políticas ponderadas com explicação auditável.                                                                |
+| `@uranus/backlog`   | Backlog e validação determinística de planos.                                                                    |
+| `@uranus/context`   | Digest automático do projeto e empacotamento com orçamento.                                                      |
+| `@uranus/memory`    | Memória em Markdown com supersessão e invalidação por checksum.                                                  |
+| `@uranus/prompts`   | Templates versionados com render estrito.                                                                        |
+| `@uranus/providers` | Claude Code headless, `ApiProvider` (OpenAI-compatible e modelos locais), roteamento por papel, circuit breaker. |
+| `@uranus/agents`    | Runtime de agentes e catálogo declarativo.                                                                       |
+| `@uranus/kernel`    | O ciclo, planejamento, cadeia de qualidade, recuperação.                                                         |
+| `@uranus/cli`       | Interface de terminal e composition root.                                                                        |
 
 ### Documentação
 
@@ -517,7 +627,7 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 
 ### Roadmap
 
-Fases 1–5 concluídas. A seguir: plugins (6), telemetria e dashboard web (7), multi-provider (8),
+Fases 1–5 e 8 (multi-provider) concluídas. A seguir: plugins (6), telemetria e dashboard web (7),
 multi-projeto e hardening 1.0 (9).
 
 ---

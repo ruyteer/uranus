@@ -49,15 +49,27 @@ export const budgetConfigSchema = z.object({
 })
 
 export const providerConfigSchema = z.object({
+  /**
+   * `cli` — o modelo edita arquivos por conta própria (Claude Code).
+   * `api` — o Uranus controla o laço de ferramentas. É o modo dos modelos
+   * locais, e o que verifica permissão a cada chamada em vez de por flag.
+   */
   mode: z.enum(['cli', 'api']).default('cli'),
-  /** Caminho do binário do CLI quando não está no PATH (ex.: instalação local). */
+  /** Preset do provider de API: ollama, lmstudio, openai-gpt, openrouter, … */
+  preset: z.string().optional(),
+  /** Caminho do binário do CLI quando não está no PATH. */
   binary: z.string().optional(),
   model: z.string().optional(),
   /** Versão fixada do binário/CLI — defesa contra drift de API (R5). */
   pinnedVersion: z.string().optional(),
   maxConcurrent: z.number().int().min(1).default(1),
+  /** Referência resolvida no momento do uso: `env:MINHA_CHAVE` (R12). */
   apiKeyRef: z.string().optional(),
   baseUrl: z.string().url().optional(),
+  /** Baixa por padrão: trabalho de engenharia quer determinismo. */
+  temperature: z.number().min(0).max(2).optional(),
+  /** Modelo local carregando pesos na 1ª chamada leva minutos. */
+  requestTimeoutMs: z.number().int().min(1000).optional(),
   extraArgs: z.array(z.string()).default([]),
 })
 
@@ -65,6 +77,16 @@ export const providersConfigSchema = z.object({
   default: z.string().min(1).default('claude-code'),
   fallback: z.array(z.string()).default([]),
   entries: z.record(z.string(), providerConfigSchema).default({}),
+  /**
+   * Roteamento por papel e por tier — é o que viabiliza o híbrido: modelo
+   * forte no Executor (edição multi-turno), modelo local nos gates (uma
+   * passada com saída estruturada).
+   *
+   *   byAgent: { executor: claude-code, reviewer: ollama, security: ollama }
+   *   byTier:  { deep: claude-code, balanced: openrouter, fast: ollama }
+   */
+  byAgent: z.record(z.string(), z.string()).default({}),
+  byTier: z.record(z.enum(['fast', 'balanced', 'deep']), z.string()).default({}),
 })
 
 export const contextConfigSchema = z.object({

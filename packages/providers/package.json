@@ -27,6 +27,7 @@
     "@uranus/core": "workspace:*"
   },
   "devDependencies": {
+    "@uranus/executors": "workspace:*",
     "@uranus/testkit": "workspace:*"
   }
 }

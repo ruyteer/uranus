@@ -94,7 +94,8 @@ export class PlanningService {
       return err(new ValidationError('Agente "planner" não registrado.'))
     }
     const provider = this.options.providers.resolve({
-      preferred: this.options.providerId,
+      agent: spec.name,
+      ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
       capabilities: spec.requires ?? {},
     })
     if (!provider.ok) return err(provider.error)
