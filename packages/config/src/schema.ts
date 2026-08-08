@@ -204,10 +204,43 @@ export const pluginsConfigSchema = z.preprocess(
   pluginsObjectSchema,
 )
 
+const modelPricingSchema = z.object({
+  model: z.string().min(1),
+  inputPerMillion: z.number().min(0),
+  outputPerMillion: z.number().min(0),
+  cacheReadPerMillion: z.number().min(0).default(0),
+  cacheWritePerMillion: z.number().min(0).default(0),
+  /** ISO ou epoch. Preço antigo continua valendo para run antigo. */
+  effectiveFrom: z
+    .union([z.string(), z.number()])
+    .default(0)
+    .transform((value) => (typeof value === 'number' ? value : Date.parse(value) || 0)),
+})
+
+export const dashboardConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().int().min(0).max(65535).default(4319),
+  /**
+   * Loopback por padrão, e isto não é conservadorismo gratuito: o painel mostra
+   * o código do projeto e concede aprovações. Fora de loopback o servidor exige
+   * `token` e se recusa a subir sem ele.
+   */
+  host: z.string().default('127.0.0.1'),
+  token: z.string().optional(),
+  /** Abre o navegador ao subir. */
+  open: z.boolean().default(false),
+})
+
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
   otlpEndpoint: z.string().url().optional(),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'silent']).default('info'),
+  dashboard: dashboardConfigSchema.default({}),
+  /**
+   * Correções da tabela de preços, por provider. O embutido envelhece; isto é
+   * o conserto sem esperar release.
+   */
+  pricing: z.record(z.string(), z.array(modelPricingSchema)).default({}),
 })
 
 export const uranusConfigSchema = z.object({
@@ -237,4 +270,5 @@ export type MemoryConfig = z.infer<typeof memoryConfigSchema>
 export type PermissionsConfig = z.infer<typeof permissionsConfigSchema>
 export type QualityConfig = z.infer<typeof qualityConfigSchema>
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>
+export type DashboardConfig = z.infer<typeof dashboardConfigSchema>
 export type PluginsConfig = z.infer<typeof pluginsConfigSchema>

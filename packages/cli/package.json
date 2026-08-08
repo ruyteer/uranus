@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "@uranus/cli",
   "version": "0.1.0",
   "description": "Uranus - CLI: init, task, start, status, logs, doctor.",
@@ -42,6 +42,8 @@
     "@uranus/queue": "workspace:*",
     "@uranus/scheduler": "workspace:*",
     "@uranus/state": "workspace:*",
+    "@uranus/telemetry": "workspace:*",
+    "@uranus/dashboard": "workspace:*",
     "@uranus/vcs": "workspace:*",
     "commander": "^13.0.0",
     "yaml": "^2.6.0"

@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Uranus</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2027;
+        --line: #262d36;
+        --text: #dfe5ec;
+        --muted: #8a94a2;
+        --accent: #6ea8fe;
+        --ok: #4ade80;
+        --warn: #fbbf24;
+        --err: #f87171;
+        --mono: ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      .brand {
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        background: var(--muted);
+      }
+      .dot.live {
+        background: var(--ok);
+        box-shadow: 0 0 8px var(--ok);
+      }
+      .dot.down {
+        background: var(--err);
+      }
+      .spacer {
+        flex: 1;
+      }
+      .stat {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .stat b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      nav {
+        display: flex;
+        gap: 4px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--line);
+        overflow-x: auto;
+      }
+      nav button {
+        background: none;
+        border: 1px solid transparent;
+        color: var(--muted);
+        padding: 6px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      nav button:hover {
+        color: var(--text);
+        background: var(--panel-2);
+      }
+      nav button[aria-selected='true'] {
+        color: var(--text);
+        background: var(--panel-2);
+        border-color: var(--line);
+      }
+      /* `[hidden]` precisa vencer o `display` explícito abaixo; sem esta regra
+         o contador aparece como "0" em vez de sumir. */
+      nav button .badge[hidden] {
+        display: none;
+      }
+      nav button .badge {
+        display: inline-block;
+        margin-left: 6px;
+        background: var(--err);
+        color: #000;
+        border-radius: 8px;
+        padding: 0 6px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      main {
+        padding: 16px 20px 48px;
+        max-width: 1400px;
+      }
+      section[hidden] {
+        display: none;
+      }
+      .grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        margin-bottom: 16px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px 16px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .big {
+        font-size: 26px;
+        font-family: var(--mono);
+        font-weight: 600;
+      }
+      .sub {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th {
+        text-align: left;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        font-weight: 600;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line);
+      }
+      td {
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      tr:hover td {
+        background: var(--panel-2);
+      }
+      .mono {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-family: var(--mono);
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+      }
+      .pill.done,
+      .pill.ok {
+        color: var(--ok);
+        border-color: #1e4632;
+      }
+      .pill.running,
+      .pill.verifying,
+      .pill.integrating {
+        color: var(--accent);
+        border-color: #22405f;
+      }
+      .pill.failed,
+      .pill.blocked,
+      .pill.err {
+        color: var(--err);
+        border-color: #5a2626;
+      }
+      .pill.warn {
+        color: var(--warn);
+        border-color: #5c4413;
+      }
+      .bar {
+        height: 6px;
+        border-radius: 3px;
+        background: var(--panel-2);
+        overflow: hidden;
+      }
+      .bar > i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+      }
+      .bar.hot > i {
+        background: var(--err);
+      }
+      .bar.warm > i {
+        background: var(--warn);
+      }
+      .tl {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .tl li {
+        display: flex;
+        gap: 10px;
+        padding: 3px 8px;
+        border-left: 2px solid var(--line);
+      }
+      .tl li.warn {
+        border-left-color: var(--warn);
+      }
+      .tl li.error {
+        border-left-color: var(--err);
+        background: #2a1717;
+      }
+      .tl time {
+        color: var(--muted);
+        flex: none;
+      }
+      .tl .n {
+        color: var(--accent);
+        flex: none;
+        min-width: 190px;
+      }
+      .tl .s {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .approval {
+        border: 1px solid var(--warn);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        background: #1d1a10;
+      }
+      .approval h4 {
+        margin: 0 0 4px;
+        font-size: 14px;
+      }
+      .approval pre {
+        margin: 8px 0;
+        white-space: pre-wrap;
+        font-size: 12px;
+        color: var(--muted);
+        max-height: 160px;
+        overflow: auto;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .actions button {
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 6px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .actions button.grant:hover {
+        border-color: var(--ok);
+        color: var(--ok);
+      }
+      .actions button.deny:hover {
+        border-color: var(--err);
+        color: var(--err);
+      }
+      .empty {
+        color: var(--muted);
+        padding: 24px;
+        text-align: center;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+      }
+      .spark {
+        display: flex;
+        align-items: flex-end;
+        gap: 3px;
+        height: 48px;
+      }
+      .spark i {
+        flex: 1;
+        background: var(--accent);
+        border-radius: 2px 2px 0 0;
+        min-height: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="brand">URANUS</span>
+      <span id="live" class="dot"></span>
+      <span id="runstate" class="stat">conectando…</span>
+      <span class="spacer"></span>
+      <span class="stat">custo <b id="hcost">—</b></span>
+      <span class="stat">fila <b id="hqueue">—</b></span>
+      <span class="stat">tick <b id="htick">—</b></span>
+    </header>
+
+    <nav id="tabs"></nav>
+
+    <main>
+      <section id="tab-agora">
+        <div class="grid" id="now-cards"></div>
+        <div class="card">
+          <h3>Atividade recente</h3>
+          <ul class="tl" id="now-timeline"></ul>
+        </div>
+      </section>
+
+      <section id="tab-fila" hidden>
+        <div class="card"><table id="queue-table"></table></div>
+      </section>
+
+      <section id="tab-timeline" hidden>
+        <div class="card">
+          <h3>Log de eventos (mais recente primeiro)</h3>
+          <ul class="tl" id="full-timeline"></ul>
+        </div>
+      </section>
+
+      <section id="tab-qualidade" hidden>
+        <div class="grid" id="quality-cards"></div>
+        <div class="card">
+          <h3>Achados</h3>
+          <table id="findings-table"></table>
+        </div>
+      </section>
+
+      <section id="tab-custo" hidden>
+        <div class="grid" id="cost-cards"></div>
+        <div class="grid">
+          <div class="card">
+            <h3>Por agente</h3>
+            <table id="cost-agent"></table>
+          </div>
+          <div class="card">
+            <h3>Por modelo</h3>
+            <table id="cost-model"></table>
+          </div>
+          <div class="card">
+            <h3>Por task (top 20)</h3>
+            <table id="cost-task"></table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-git" hidden>
+        <div class="card">
+          <h3>Commits</h3>
+          <table id="git-commits"></table>
+        </div>
+        <div class="card" style="margin-top: 12px">
+          <h3>Pull requests</h3>
+          <table id="git-prs"></table>
+        </div>
+      </section>
+
+      <section id="tab-memoria" hidden>
+        <div class="grid" id="memory-cards"></div>
+      </section>
+
+      <section id="tab-aprovacoes" hidden>
+        <div id="approvals"></div>
+      </section>
+
+      <section id="tab-saude" hidden>
+        <div class="grid" id="health-cards"></div>
+        <div class="card">
+          <h3>Spans recentes</h3>
+          <table id="spans-table"></table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      // Painel autocontido: sem framework, sem rede externa, sem build.
+      // O CSP do servidor proíbe qualquer origem que não seja esta.
+      ;(function () {
+        var TABS = [
+          ['agora', 'Agora'],
+          ['fila', 'Fila'],
+          ['timeline', 'Timeline'],
+          ['qualidade', 'Qualidade'],
+          ['custo', 'Custo'],
+          ['git', 'Git'],
+          ['memoria', 'Memória'],
+          ['aprovacoes', 'Aprovações'],
+          ['saude', 'Saúde'],
+        ]
+        var token = new URLSearchParams(location.search).get('token') || ''
+        var qs = token ? '?token=' + encodeURIComponent(token) : ''
+        var state = null
+        var active = location.hash.replace('#', '') || 'agora'
+
+        function api(path, options) {
+          return fetch(path + qs, options || {})
+        }
+
+        // Escapar é obrigatório: título de task e mensagem de bloqueio vêm do
+        // repositório, e conteúdo de repositório é dado, nunca marcação (INV-6).
+        function esc(value) {
+          return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
+          })
+        }
+        function money(value) {
+          return value == null ? '—' : '$' + Number(value).toFixed(4)
+        }
+        function time(at) {
+          return at ? new Date(at).toLocaleTimeString('pt-BR', { hour12: false }) : '—'
+        }
+        function dur(ms) {
+          if (ms == null) return '—'
+          if (ms < 1000) return Math.round(ms) + 'ms'
+          if (ms < 60000) return (ms / 1000).toFixed(1) + 's'
+          return Math.round(ms / 60000) + 'min'
+        }
+        function el(id) {
+          return document.getElementById(id)
+        }
+        function card(title, value, sub) {
+          return (
+            '<div class="card"><h3>' +
+            esc(title) +
+            '</h3><div class="big">' +
+            esc(value) +
+            '</div>' +
+            (sub ? '<div class="sub">' + sub + '</div>' : '') +
+            '</div>'
+          )
+        }
+        function bar(used, limit) {
+          var ratio = limit > 0 ? Math.min(1, used / limit) : 0
+          var cls = ratio > 0.9 ? ' hot' : ratio > 0.7 ? ' warm' : ''
+          return (
+            '<div class="bar' +
+            cls +
+            '"><i style="width:' +
+            (ratio * 100).toFixed(1) +
+            '%"></i></div>'
+          )
+        }
+        function table(headers, rows) {
+          if (!rows.length) return '<tr><td class="muted">nada ainda</td></tr>'
+          return (
+            '<thead><tr>' +
+            headers.map((h) => '<th>' + esc(h) + '</th>').join('') +
+            '</tr></thead><tbody>' +
+            rows.join('') +
+            '</tbody>'
+          )
+        }
+
+        // ── Navegação ────────────────────────────────────────────────────────
+        el('tabs').innerHTML = TABS.map(function (tab) {
+          return (
+            '<button data-tab="' +
+            tab[0] +
+            '" aria-selected="false">' +
+            tab[1] +
+            '<span class="badge" hidden></span></button>'
+          )
+        }).join('')
+        el('tabs').addEventListener('click', function (event) {
+          var button = event.target.closest('button')
+          if (button) select(button.dataset.tab)
+        })
+        function select(name) {
+          active = name
+          location.hash = name
+          TABS.forEach(function (tab) {
+            el('tab-' + tab[0]).hidden = tab[0] !== name
+          })
+          Array.prototype.forEach.call(el('tabs').children, function (button) {
+            button.setAttribute('aria-selected', String(button.dataset.tab === name))
+          })
+        }
+        select(active)
+
+        // ── Render ───────────────────────────────────────────────────────────
+        function render() {
+          if (!state) return
+          var run = state.run || {}
+          var cost = state.cost || {}
+          var queue = state.queue || {}
+
+          el('runstate').textContent =
+            (run.status || 'idle') +
+            (run.runId ? ' · ' + run.runId : '') +
+            (run.phase ? ' · ' + run.phase : '')
+          el('hcost').textContent = money(cost.totalUsd)
+          el('hqueue').textContent = (queue.remaining || 0) + '/' + (queue.total || 0)
+          el('htick').textContent = run.ticks || 0
+
+          var pending = (state.approvals && state.approvals.pending) || []
+          var badge = el('tabs').querySelector('[data-tab=aprovacoes] .badge')
+          badge.hidden = pending.length === 0
+          badge.textContent = pending.length
+
+          renderNow()
+          renderQueue()
+          renderTimeline()
+          renderQuality()
+          renderCost()
+          renderGit()
+          renderMemory()
+          renderApprovals()
+          renderHealth()
+        }
+
+        function renderNow() {
+          var budget = state.budget || {}
+          var cost = state.cost || {}
+          var queue = state.queue || {}
+          var html = ''
+          html += card(
+            'Custo do run',
+            money(cost.totalUsd),
+            'projeção +' + money(cost.projectedRemainingUsd),
+          )
+          html += card(
+            'Tasks restantes',
+            queue.remaining || 0,
+            'de ' + (queue.total || 0) + ' conhecidas',
+          )
+          if (budget.run) {
+            html += card(
+              'Orçamento do run',
+              money(budget.run.usedUsd) + ' / ' + money(budget.run.limitUsd),
+              bar(budget.run.usedUsd, budget.run.limitUsd),
+            )
+            html += card(
+              'Tokens',
+              (budget.run.usedTokens || 0).toLocaleString('pt-BR'),
+              bar(budget.run.usedTokens, budget.run.limitTokens),
+            )
+          }
+          var quality = state.quality || {}
+          html += card(
+            'Checks',
+            quality.passRate == null ? '—' : Math.round(quality.passRate * 100) + '%',
+            quality.checks
+              ? quality.checks.passed + ' ok · ' + quality.checks.failed + ' falhas'
+              : '',
+          )
+          el('now-cards').innerHTML = html
+          el('now-timeline').innerHTML = timelineHtml((state.timeline || []).slice(0, 25))
+        }
+
+        function timelineHtml(entries) {
+          if (!entries.length) return '<li class="muted">sem eventos</li>'
+          return entries
+            .map(function (entry) {
+              return (
+                '<li class="' +
+                esc(entry.severity) +
+                '"><time>' +
+                time(entry.at) +
+                '</time><span class="n">' +
+                esc(entry.name) +
+                '</span><span class="s">' +
+                esc(entry.summary || entry.taskId || '') +
+                '</span></li>'
+              )
+            })
+            .join('')
+        }
+
+        function renderQueue() {
+          var rows = (state.tasks || []).map(function (task) {
+            return (
+              '<tr><td class="mono">' +
+              esc(task.id) +
+              '</td><td>' +
+              esc(task.title) +
+              (task.blockReason ? '<div class="sub">' + esc(task.blockReason) + '</div>' : '') +
+              '</td><td><span class="pill ' +
+              esc(task.state) +
+              '">' +
+              esc(task.state) +
+              '</span></td><td class="mono">' +
+              esc(task.kind) +
+              '</td><td class="mono">' +
+              esc(task.agent || '—') +
+              '</td><td class="mono">' +
+              task.attempts +
+              '</td><td class="mono">' +
+              money(task.costMicros / 1e6) +
+              '</td><td class="mono muted">' +
+              time(task.updatedAt) +
+              '</td></tr>'
+            )
+          })
+          el('queue-table').innerHTML = table(
+            ['id', 'título', 'estado', 'tipo', 'agente', 'tent.', 'custo', 'atualizada'],
+            rows,
+          )
+        }
+
+        function renderTimeline() {
+          el('full-timeline').innerHTML = timelineHtml(state.timeline || [])
+        }
+
+        function renderQuality() {
+          var quality = state.quality || {}
+          var html = ''
+          html += card('Gates executados', quality.gatesRun || 0)
+          html += card('Bloqueios', quality.blocked || 0, 'integrações barradas antes do commit')
+          html += card('Achados', quality.findingsCount || 0)
+          html += card(
+            'Taxa de aprovação dos checks',
+            quality.passRate == null ? '—' : Math.round(quality.passRate * 100) + '%',
+          )
+          el('quality-cards').innerHTML = html
+          var rows = Array.isArray(quality.findings) ? quality.findings : []
+          el('findings-table').innerHTML = table(
+            ['quando', 'origem', 'severidade', 'título', 'task'],
+            rows.map(function (finding) {
+              return (
+                '<tr><td class="mono muted">' +
+                time(finding.at) +
+                '</td><td class="mono">' +
+                esc(finding.kind) +
+                '</td><td><span class="pill ' +
+                (finding.severity === 'critical' || finding.severity === 'high' ? 'err' : 'warn') +
+                '">' +
+                esc(finding.severity) +
+                '</span></td><td>' +
+                esc(finding.title) +
+                '</td><td class="mono muted">' +
+                esc(finding.taskId || '—') +
+                '</td></tr>'
+              )
+            }),
+          )
+        }
+
+        function renderCost() {
+          var cost = state.cost || {}
+          var daily = cost.daily || []
+          var max = Math.max.apply(
+            null,
+            daily
+              .map(function (day) {
+                return day.usd
+              })
+              .concat([0.0001]),
+          )
+          var spark =
+            '<div class="spark">' +
+            daily
+              .map(function (day) {
+                return (
+                  '<i style="height:' +
+                  Math.max(2, (day.usd / max) * 100) +
+                  '%" title="' +
+                  money(day.usd) +
+                  '"></i>'
+                )
+              })
+              .join('') +
+            '</div>'
+          var html = ''
+          html += card(
+            'Total',
+            money(cost.totalUsd),
+            cost.stats ? cost.stats.calls + ' sessões de agente' : '',
+          )
+          html += card(
+            'Projeção restante',
+            money(cost.projectedRemainingUsd),
+            'ritmo atual × tasks na fila',
+          )
+          html += card(
+            'Últimos 14 dias',
+            money(
+              daily.reduce(function (sum, day) {
+                return sum + day.usd
+              }, 0),
+            ),
+            spark,
+          )
+          el('cost-cards').innerHTML = html
+
+          function rows(list) {
+            return (list || []).map(function (row) {
+              return (
+                '<tr><td class="mono">' +
+                esc(row.key) +
+                '</td><td class="mono">' +
+                money(row.usd) +
+                '</td><td class="mono muted">' +
+                (row.calls || 0) +
+                '</td></tr>'
+              )
+            })
+          }
+          el('cost-agent').innerHTML = table(['agente', 'custo', 'chamadas'], rows(cost.byAgent))
+          el('cost-model').innerHTML = table(['modelo', 'custo', 'chamadas'], rows(cost.byModel))
+          el('cost-task').innerHTML = table(['task', 'custo', 'chamadas'], rows(cost.byTask))
+        }
+
+        function renderGit() {
+          var git = state.git || {}
+          el('git-commits').innerHTML = table(
+            ['quando', 'sha', 'assunto', 'arquivos', '+/-', 'task'],
+            (git.commits || []).map(function (commit) {
+              return (
+                '<tr><td class="mono muted">' +
+                time(commit.at) +
+                '</td><td class="mono">' +
+                esc(commit.sha) +
+                '</td><td>' +
+                esc(commit.subject) +
+                '</td><td class="mono">' +
+                commit.files +
+                '</td><td class="mono"><span style="color:var(--ok)">+' +
+                commit.insertions +
+                '</span> <span style="color:var(--err)">-' +
+                commit.deletions +
+                '</span></td><td class="mono muted">' +
+                esc(commit.taskId) +
+                '</td></tr>'
+              )
+            }),
+          )
+          el('git-prs').innerHTML = table(
+            ['quando', 'número', 'título', 'url'],
+            (git.pullRequests || []).map(function (pr) {
+              return (
+                '<tr><td class="mono muted">' +
+                time(pr.at) +
+                '</td><td class="mono">#' +
+                pr.number +
+                '</td><td>' +
+                esc(pr.title) +
+                '</td><td class="mono muted">' +
+                esc(pr.url) +
+                '</td></tr>'
+              )
+            }),
+          )
+        }
+
+        function renderMemory() {
+          var memory = state.memory || {}
+          var planning = state.planning || {}
+          el('memory-cards').innerHTML =
+            card('Memórias gravadas', memory.updates || 0) +
+            card(
+              'Conflitos detectados',
+              memory.conflicts || 0,
+              'contradição entre o que sabíamos e o observado',
+            ) +
+            card('Compactações', memory.compactions || 0) +
+            card('Invalidações', memory.invalidations || 0, 'referências que deixaram de existir') +
+            card('Planos aceitos', planning.created || 0) +
+            card(
+              'Planos rejeitados',
+              planning.rejected || 0,
+              'barrados pelo validador determinístico',
+            )
+        }
+
+        function renderApprovals() {
+          var pending = (state.approvals && state.approvals.pending) || []
+          if (!pending.length) {
+            el('approvals').innerHTML = '<div class="empty">Nenhuma aprovação pendente.</div>'
+            return
+          }
+          el('approvals').innerHTML = pending
+            .map(function (approval) {
+              return (
+                '<div class="approval"><h4>' +
+                esc(approval.title) +
+                ' <span class="pill warn">' +
+                esc(approval.kind) +
+                '</span> <span class="pill">risco ' +
+                esc(approval.risk) +
+                '</span></h4><div class="sub mono">' +
+                esc(approval.id) +
+                (approval.taskId ? ' · ' + esc(approval.taskId) : '') +
+                '</div><pre>' +
+                esc(approval.detail) +
+                '</pre><div class="actions"><button class="grant" data-approve="' +
+                esc(approval.id) +
+                '">Aprovar</button><button class="deny" data-deny="' +
+                esc(approval.id) +
+                '">Negar</button></div></div>'
+              )
+            })
+            .join('')
+        }
+
+        el('approvals').addEventListener('click', function (event) {
+          var button = event.target.closest('button')
+          if (!button) return
+          var id = button.dataset.approve || button.dataset.deny
+          if (!id) return
+          var effect = button.dataset.approve ? 'granted' : 'denied'
+          button.disabled = true
+          api('/api/approvals/' + encodeURIComponent(id), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effect: effect, note: 'via dashboard' }),
+          })
+            .then(function () {
+              refresh()
+            })
+            .catch(function () {
+              button.disabled = false
+            })
+        })
+
+        function renderHealth() {
+          var health = state.health || {}
+          var providers = health.providers || {}
+          var html = ''
+          Object.keys(providers).forEach(function (id) {
+            var entry = providers[id]
+            // Rate limit não é degradação, mas também não é "ok": um painel que
+            // diz ok enquanto o provider está em espera esconde o motivo real
+            // de o run ter parado de andar.
+            var limitado = entry.rateLimitedUntil && entry.rateLimitedUntil > Date.now()
+            var estado = entry.degraded ? 'degradado' : limitado ? 'em espera' : 'ok'
+            var detalhe = esc(entry.reason || '')
+            if (entry.consecutiveFailures) {
+              detalhe += ' · ' + entry.consecutiveFailures + ' falhas seguidas'
+            }
+            if (limitado) {
+              detalhe +=
+                ' · rate limit até ' + new Date(entry.rateLimitedUntil).toLocaleTimeString('pt-BR')
+            }
+            html += card('Provider ' + id, estado, detalhe)
+          })
+          if (!html) html = card('Providers', 'sem incidentes')
+          var failures = health.pluginFailures || []
+          html += card(
+            'Falhas de plugin',
+            failures.length,
+            failures
+              .map(function (failure) {
+                return esc(failure.pluginId)
+              })
+              .join(', '),
+          )
+          el('health-cards').innerHTML = html
+
+          el('spans-table').innerHTML = table(
+            ['span', 'duração', 'quando', 'erro'],
+            (health.spans || []).map(function (span) {
+              return (
+                '<tr><td class="mono">' +
+                esc(span.name) +
+                '</td><td class="mono">' +
+                dur(span.durationMs) +
+                '</td><td class="mono muted">' +
+                time(span.startedAt) +
+                '</td><td class="mono" style="color:var(--err)">' +
+                esc(span.error || '') +
+                '</td></tr>'
+              )
+            }),
+          )
+        }
+
+        // ── Ligação ao servidor ──────────────────────────────────────────────
+        var pendingRefresh = null
+        function refresh() {
+          return api('/api/state')
+            .then(function (response) {
+              return response.json()
+            })
+            .then(function (data) {
+              state = data
+              render()
+            })
+            .catch(function () {
+              el('live').className = 'dot down'
+            })
+        }
+
+        // Coalescência: uma rajada de eventos vira UM refetch. Sem isto, um
+        // tick que emite 30 eventos dispararia 30 requisições e o painel
+        // ficaria mais pesado que o kernel que ele observa.
+        function scheduleRefresh() {
+          if (pendingRefresh) return
+          pendingRefresh = setTimeout(function () {
+            pendingRefresh = null
+            refresh()
+          }, 200)
+        }
+
+        function connect() {
+          var source = new EventSource('/api/stream' + qs)
+          source.onopen = function () {
+            el('live').className = 'dot live'
+            refresh()
+          }
+          source.addEventListener('event', function (message) {
+            el('live').className = 'dot live'
+            scheduleRefresh()
+            try {
+              var entry = JSON.parse(message.data)
+              el('runstate').dataset.last = entry.name
+            } catch (error) {
+              /* linha malformada não derruba o painel */
+            }
+          })
+          source.onerror = function () {
+            el('live').className = 'dot down'
+            // O EventSource reconecta sozinho; não fechamos aqui de propósito.
+          }
+        }
+
+        refresh()
+        connect()
+        // Rede de segurança: se o fluxo cair sem disparar erro, o painel ainda
+        // converge. 10 s é raro o bastante para não pesar e curto o bastante
+        // para ninguém olhar dados velhos sem perceber.
+        setInterval(refresh, 10000)
+      })()
+    </script>
+  </body>
+</html>

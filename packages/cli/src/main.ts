@@ -694,38 +694,57 @@ program
   .description('Inicia o kernel e trabalha até drenar a fila')
   .option('--max-tasks <n>', 'máximo de tasks a completar', (v) => Number.parseInt(v, 10))
   .option('--resume <runId>', 'retoma um run interrompido')
-  .action(async (options: { maxTasks?: number; resume?: string }) => {
-    await withComposition(async ({ composition }) => {
-      const { asRunId } = await import('@uranus/core')
-      const unsub = composition.kernel.events.onAny((event) => {
-        console.log(`  ${event.name}${event.taskId === undefined ? '' : ` ${event.taskId}`}`)
-      })
-      const started = await composition.kernel.start({
-        projectId: composition.project.id,
-        ...(options.maxTasks === undefined ? {} : { maxTasks: options.maxTasks }),
-        ...(options.resume === undefined ? {} : { resumeRunId: asRunId(options.resume) }),
-      })
-      if (!started.ok) {
-        console.error(`Falha ao iniciar: ${started.error.message}`)
-        process.exitCode = 1
-        return
-      }
-      console.log(`Run: ${started.value}`)
+  .option('--dashboard', 'sobe o painel web junto com o run')
+  .option('--port <n>', 'porta do painel', (v) => Number.parseInt(v, 10))
+  .action(
+    async (options: { maxTasks?: number; resume?: string; dashboard?: boolean; port?: number }) => {
+      await withComposition(async ({ composition }) => {
+        const { asRunId } = await import('@uranus/core')
+        const painel =
+          options.dashboard === true || composition.config.telemetry.dashboard.enabled
+            ? await serveDashboard(composition, options.port)
+            : undefined
+        const unsub = composition.kernel.events.onAny((event) => {
+          console.log(`  ${event.name}${event.taskId === undefined ? '' : ` ${event.taskId}`}`)
+        })
+        const started = await composition.kernel.start({
+          projectId: composition.project.id,
+          ...(options.maxTasks === undefined ? {} : { maxTasks: options.maxTasks }),
+          ...(options.resume === undefined ? {} : { resumeRunId: asRunId(options.resume) }),
+        })
+        if (!started.ok) {
+          console.error(`Falha ao iniciar: ${started.error.message}`)
+          process.exitCode = 1
+          return
+        }
+        console.log(`Run: ${started.value}`)
 
-      const stop = (): void => {
-        void composition.kernel.stop('interrompido pelo usuário (SIGINT)')
-      }
-      process.on('SIGINT', stop)
-      await composition.kernel.wait()
-      process.off('SIGINT', stop)
-      unsub()
+        const stop = (): void => {
+          void composition.kernel.stop('interrompido pelo usuário (SIGINT)')
+        }
+        process.on('SIGINT', stop)
+        await composition.kernel.wait()
+        process.off('SIGINT', stop)
+        unsub()
 
-      const budget = composition.kernel.status().budget
-      console.log(
-        `Encerrado. Custo do run: ${formatMoney(budget.run.usedCost)} · tokens: ${String(budget.run.usedTokens)}`,
-      )
-    })
-  })
+        const budget = composition.kernel.status().budget
+        console.log(
+          `Encerrado. Custo do run: ${formatMoney(budget.run.usedCost)} · tokens: ${String(budget.run.usedTokens)}`,
+        )
+        // O painel fica de pé depois do run de propósito: é logo depois de
+        // terminar que alguém quer olhar custo, achados e o que foi comitado.
+        if (painel !== undefined) {
+          console.log(`\nPainel aberto em ${painel.url} — Ctrl+C para encerrar.`)
+          await new Promise<void>((resolve) => {
+            process.once('SIGINT', () => {
+              resolve()
+            })
+          })
+          await painel.close()
+        }
+      })
+    },
+  )
 
 program
   .command('status')
@@ -822,6 +841,113 @@ program
       await composition.close()
     }
   })
+
+// ── dashboard / custo ───────────────────────────────────────────────────────
+
+program
+  .command('dashboard')
+  .description('Sobe o painel web (estado vivo, custo, qualidade, aprovações)')
+  .option('--port <n>', 'porta', (v) => Number.parseInt(v, 10))
+  .option('--host <host>', 'endereço de escuta (fora de loopback exige token)')
+  .action(async (options: { port?: number; host?: string }) => {
+    await withComposition(async ({ composition }) => {
+      const painel = await serveDashboard(composition, options.port, options.host)
+      console.log(`Painel: ${painel.url}`)
+      console.log('O painel reflete o estado do projeto em tempo real. Ctrl+C encerra.')
+      await new Promise<void>((resolve) => {
+        process.once('SIGINT', () => {
+          resolve()
+        })
+      })
+      await painel.close()
+    })
+  })
+
+const cost = program.command('cost').description('Custo real por task, agente e modelo')
+
+cost
+  .command('show', { isDefault: true })
+  .description('Resumo do custo contabilizado')
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      const accountant = composition.observability.cost
+      const stats = accountant.stats()
+      if (stats.calls === 0) {
+        console.log('Nenhuma sessão de agente contabilizada ainda neste processo.')
+        console.log('O custo é acumulado durante o run: use `uranus start --dashboard`.')
+        return Promise.resolve()
+      }
+
+      console.log(`Total: ${formatMoney(accountant.total())} em ${String(stats.calls)} sessões`)
+      console.log('\nPor agente:')
+      for (const row of accountant.breakdownByAgent()) {
+        console.log(
+          `  ${row.key.padEnd(16)} ${formatMoney(row.cost).padStart(10)}  ${String(row.calls)} sessões`,
+        )
+      }
+      console.log('\nPor modelo:')
+      for (const row of accountant.breakdownByModel()) {
+        console.log(`  ${row.key.padEnd(30)} ${formatMoney(row.cost).padStart(10)}`)
+      }
+      return Promise.resolve()
+    })
+  })
+
+cost
+  .command('reconcile <valorNaFatura>')
+  .description('Compara o total contabilizado com a fatura real do provider')
+  .action(async (raw: string) => {
+    await withComposition(({ composition }) => {
+      const invoice = Number.parseFloat(raw.replace(/[^0-9.,]/g, '').replace(',', '.'))
+      if (!Number.isFinite(invoice)) {
+        console.error(`Valor inválido: ${raw}`)
+        process.exitCode = 1
+        return Promise.resolve()
+      }
+      const result = composition.observability.cost.reconcile(invoice)
+      console.log(`Uranus reportou: ${formatMoney(result.reported)}`)
+      console.log(`Fatura:          ${formatMoney(result.invoice)}`)
+      console.log(`Diferença:       ${(result.deltaRatio * 100).toFixed(1)}%`)
+      console.log(
+        result.withinTolerance
+          ? '\nDentro da tolerância de ±3%.'
+          : '\nFora da tolerância. Causa mais comum: modelo sem preço na tabela — ' +
+              'procure "sem preço conhecido" no log e corrija em telemetry.pricing.',
+      )
+      if (!result.withinTolerance) process.exitCode = 1
+      return Promise.resolve()
+    })
+  })
+
+async function serveDashboard(
+  composition: Awaited<ReturnType<typeof compose>>,
+  port?: number,
+  host?: string,
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const { DashboardServer, SseHub } = await import('@uranus/dashboard')
+  const config = composition.config.telemetry.dashboard
+  const hub = new SseHub()
+  const server = new DashboardServer(
+    {
+      aggregator: composition.observability.aggregator,
+      events: composition.deps.events,
+      humanGate: composition.deps.humanGate,
+      logger: composition.deps.logger,
+      clock: composition.deps.clock,
+      port: port ?? config.port,
+      host: host ?? config.host,
+      ...(config.token === undefined ? {} : { token: config.token }),
+      control: {
+        pause: () => composition.kernel.pause(),
+        resume: () => composition.kernel.resume(),
+      },
+    },
+    hub,
+  )
+  const { url } = await server.listen()
+  const suffix = config.token === undefined ? '' : `?token=${encodeURIComponent(config.token)}`
+  return { url: `${url}${suffix}`, close: () => server.close() }
+}
 
 // ── infra ───────────────────────────────────────────────────────────────────
 

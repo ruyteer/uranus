@@ -1,4 +1,4 @@
-﻿{
+{
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "./src",
@@ -23,6 +23,8 @@
     { "path": "../memory/tsconfig.build.json" },
     { "path": "../backlog/tsconfig.build.json" },
     { "path": "../scheduler/tsconfig.build.json" },
-    { "path": "../plugins/tsconfig.build.json" }
+    { "path": "../plugins/tsconfig.build.json" },
+    { "path": "../telemetry/tsconfig.build.json" },
+    { "path": "../dashboard/tsconfig.build.json" }
   ]
 }

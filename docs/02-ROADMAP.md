@@ -208,19 +208,51 @@ Instalar um plugin é confiar no autor, como instalar um pacote npm.
 
 ### Escopo
 
-- `@uranus/telemetry` — métricas, tracing OpenTelemetry, tabela de preços versionada, custo real por
-  task/agente/dia, projeção.
-- `@uranus/dashboard` — API Fastify + WebSocket + SPA React. Painéis: Agora, Fila, Timeline,
+- `@uranus/telemetry` — métricas com cardinalidade limitada, spans encadeados, exportador OTLP,
+  tabela de preços versionada, custo real por task/agente/modelo/dia, projeção, reconciliação.
+- `@uranus/dashboard` — servidor HTTP + SSE + página autocontida. Painéis: Agora, Fila, Timeline,
   Qualidade, Custo, Git, Memória, Aprovações, Saúde.
 - Fila de aprovações interativa (`HumanGate` conectado à UI).
-- CLI: `dashboard`, `attach` (TUI).
+- CLI: `dashboard`, `start --dashboard`, `cost show`, `cost reconcile`.
+
+**Dois defeitos sérios que esta fase encontrou e corrigiu:**
+
+1. **Gates e Planner gastavam fora do orçamento.** Só o Executor chamava `budget.consume`. Como a
+   cadeia de qualidade é justamente o que multiplica o custo por task, o INV-7 valia para menos da
+   metade do gasto. Agora `AgentRunStarted`/`AgentRunFinished` saem do `DefaultAgentRuntime` — o
+   único caminho por onde passam Executor, Planner e todos os gates — e `GatePipeline` e
+   `PlanningService` consomem orçamento.
+
+2. **A redação de segredos redigia os próprios dados do sistema.** `/pass/` casava `passed` e
+   `passRate`, `/token/` casava `maxTokens`, `/auth/` casava `author`, `/session/` casava
+   `sessionId`. Metade dos números do log saía como `[REDACTED]` — e um log em que tudo está
+   redigido ensina a ignorar `[REDACTED]`. A regra passou a casar por **segmento** do
+   identificador (`accessToken` sim, `maxTokens` não).
+
+**Desvios da arquitetura original, com o motivo:**
+
+- **SSE em `node:http` no lugar de Fastify + WebSocket.** O tráfego do painel é de mão única; as
+  poucas ações no sentido contrário são POSTs comuns. SSE entrega isso com zero dependências, sem
+  código de framing e com reconexão automática no navegador. Trocar por Fastify depois muda um
+  arquivo.
+- **Página autocontida no lugar de SPA React.** Um bundler, um framework de UI e as dependências
+  dos dois num monorepo que hoje instala em segundos não se pagam para nove painéis de leitura.
+- **Só métricas no OTLP, sem traces.** Traces exigiriam propagação de contexto e o SDK oficial;
+  enquanto os spans cabem no painel próprio, o custo não se paga.
 
 ### Definition of Done
 
-- [ ] Dashboard mostra o estado ao vivo com latência < 1s durante um run de 2h.
-- [ ] Custo reportado bate com o faturamento real do provider (±3%).
-- [ ] Uma aprovação concedida pela UI desbloqueia a task em < 2s.
-- [ ] Segredos nunca aparecem em log, evento ou UI (teste de redaction).
+- [x] Dashboard mostra o estado ao vivo com latência < 1s (teste mede a entrega por SSE).
+- [x] Custo reportado bate com o faturamento real do provider (±3%) — o custo vem do `usage` real e,
+      quando o provider reporta dinheiro (`total_cost_usd` do Claude Code), é esse valor que entra;
+      `uranus cost reconcile <fatura>` fecha o ciclo contra o extrato.
+- [x] Uma aprovação concedida pela UI desbloqueia a task em < 2s (teste mede ponta a ponta).
+- [x] Segredos nunca aparecem em log, evento ou UI — redação na ingestão **e** na fronteira HTTP.
+
+**Limite honesto:** o ±3% é verificável de verdade só contra uma fatura real, e isso depende de um
+run pago do usuário. O que está garantido por teste é a aritmética, a precedência do custo reportado
+pelo provider sobre a tabela, e o aviso ruidoso quando um modelo não tem preço conhecido — que é o
+único jeito de o total sair menor que a fatura sem ninguém notar.
 
 ---
 

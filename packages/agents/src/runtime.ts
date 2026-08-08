@@ -5,6 +5,7 @@ import type {
   AgentRuntime,
   AgentSpec,
   Check,
+  EventBus,
   Logger,
   PermissionSet,
   PromptRegistry,
@@ -16,6 +17,15 @@ export interface DefaultAgentRuntimeOptions {
   readonly prompts: PromptRegistry
   readonly registry: AgentRegistry
   readonly logger: Logger
+  /**
+   * Opcional, mas é o que torna o custo por agente observável.
+   *
+   * Este é o único ponto do sistema por onde passa **toda** execução de agente
+   * — Executor, Planner e cada gate de qualidade. Emitir daqui significa que
+   * nenhum gasto fica invisível; emitir de cada chamador significaria descobrir
+   * um esquecido só quando a fatura não fechasse.
+   */
+  readonly events?: EventBus
 }
 
 /**
@@ -29,11 +39,13 @@ export class DefaultAgentRuntime implements AgentRuntime {
   private readonly prompts: PromptRegistry
   private readonly registry: AgentRegistry
   private readonly logger: Logger
+  private readonly events: EventBus | undefined
 
   constructor(options: DefaultAgentRuntimeOptions) {
     this.prompts = options.prompts
     this.registry = options.registry
     this.logger = options.logger.child({ component: 'agent-runtime' })
+    this.events = options.events
   }
 
   async run(spec: AgentSpec, context: AgentRunContext, signal: AbortSignal): Promise<AgentOutput> {
@@ -42,6 +54,19 @@ export class DefaultAgentRuntime implements AgentRuntime {
 
     const request = this.buildRequest(spec, prepared)
     const session = await prepared.provider.createSession(request, signal)
+
+    await this.events?.emit(
+      'AgentRunStarted',
+      {
+        sessionId: session.id,
+        attemptId: prepared.attempt.id,
+        agent: spec.name,
+        provider: prepared.provider.id,
+        model: request.model ?? prepared.attempt.model,
+        contextDigest: prepared.context.digest,
+      },
+      { actor: { type: 'agent', name: spec.name }, taskId: prepared.task.id },
+    )
 
     // Drena o stream (eventos de progresso vão para log; o resultado é o que conta).
     for await (const event of session.stream()) {
@@ -58,6 +83,21 @@ export class DefaultAgentRuntime implements AgentRuntime {
     }
 
     const result = await session.result()
+
+    // Emitido ANTES do short-circuit de erro abaixo, de propósito: uma sessão
+    // que morreu no meio já queimou tokens, e não contabilizá-los seria a
+    // fatura vindo maior que o relatado exatamente no caso ruim.
+    await this.events?.emit(
+      'AgentRunFinished',
+      {
+        sessionId: session.id,
+        status: result.status,
+        turns: result.turns,
+        usage: result.usage,
+        cost: result.cost,
+      },
+      { actor: { type: 'agent', name: spec.name }, taskId: prepared.task.id },
+    )
 
     // Sessão que morreu (auth, rede, limite) NÃO segue para verificação: o
     // workspace intocado produziria "diff vazio" e enterraria a causa real.

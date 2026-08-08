@@ -50,7 +50,6 @@ import {
   FileCheckpointManager,
   GatePipeline,
   InMemoryHumanGate,
-  InMemoryTelemetry,
   PlanningService,
   UranusKernel,
   findingsToTaskDrafts,
@@ -67,6 +66,14 @@ import {
   readmeSource,
 } from '@uranus/context'
 import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
+import {
+  DefaultCostAccountant,
+  DefaultTelemetry,
+  TelemetryAggregator,
+  attachCostAccounting,
+  attachOperationalMetrics,
+  createPricingTable,
+} from '@uranus/telemetry'
 
 export interface CompositionOptions {
   readonly projectDir: string
@@ -92,6 +99,11 @@ export interface Composition {
     readonly loader: DefaultPluginLoader
     readonly registry: PluginRegistry
     readonly report: ActivationReport
+  }
+  readonly observability: {
+    readonly telemetry: DefaultTelemetry
+    readonly cost: DefaultCostAccountant
+    readonly aggregator: TelemetryAggregator
   }
   close(): Promise<void>
 }
@@ -243,7 +255,9 @@ export async function compose(options: CompositionOptions): Promise<Composition>
       })
     }
   }
-  const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
+  // `events` aqui é o que torna o custo por agente observável: este runtime é o
+  // único caminho por onde passam Executor, Planner e todos os gates.
+  const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger, events })
 
   const providers = new DefaultProviderRegistry({
     fallbackOrder: options.config.providers.fallback,
@@ -301,6 +315,25 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     },
     budgetConfig.warnAtRatio,
   )
+
+  // Observabilidade (Fase 7). Nasce depois do orçamento porque o agregador o
+  // lê, e antes do kernel porque `KernelDeps.telemetry` é esta instância — a
+  // do painel e a do kernel precisam ser a mesma, ou o relatório e a tela
+  // contam histórias diferentes.
+  const telemetry = new DefaultTelemetry({ clock, logger })
+  const costAccountant = new DefaultCostAccountant({
+    pricing: createPricingTable(options.config.telemetry.pricing),
+  })
+  const aggregator = new TelemetryAggregator({
+    clock,
+    events,
+    cost: costAccountant,
+    telemetry,
+    budget,
+  })
+  const detachCost = attachCostAccounting({ events, cost: costAccountant, telemetry, logger })
+  const detachMetrics = attachOperationalMetrics({ events, telemetry })
+  aggregator.start()
 
   const checkpoints = new FileCheckpointManager({
     dir: join(uranusDir, 'checkpoints'),
@@ -374,7 +407,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     runs: state.runs,
     checkpoints,
     recovery,
-    telemetry: new InMemoryTelemetry(),
+    telemetry,
     plugins: pluginLoader,
   }
 
@@ -421,6 +454,8 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     maxAttemptsPerTask: options.config.kernel.maxAttemptsPerTask,
     maxPlanningAttempts: 2,
     extraTestRunners: () => pluginRegistry.knownTestRunners(),
+    // O Planner gasta como qualquer agente; sem isto ele ficava fora do INV-7.
+    budget,
   })
 
   // Cadeia de qualidade (Fase 5): roda entre a verificação por código e o
@@ -445,6 +480,10 @@ export async function compose(options: CompositionOptions): Promise<Composition>
       followUpAt: options.config.quality.followUpAt,
       maxFindings: options.config.quality.maxFindings,
     },
+    // Cada gate é uma sessão de modelo. Antes da Fase 7 esse gasto não entrava
+    // no orçamento — e a cadeia de qualidade é justamente o que multiplica o
+    // custo por task.
+    budget,
   })
 
   const kernel = new UranusKernel({
@@ -467,7 +506,11 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     contextManager,
     memoryStore,
     plugins: { loader: pluginLoader, registry: pluginRegistry, report: pluginReport },
+    observability: { telemetry, cost: costAccountant, aggregator },
     async close(): Promise<void> {
+      detachCost()
+      detachMetrics()
+      aggregator.stop()
       await pluginLoader.deactivateAll()
       await memoryStore.close()
       await eventStore.close()

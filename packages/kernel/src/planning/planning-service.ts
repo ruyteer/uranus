@@ -1,6 +1,7 @@
 import type {
   AgentRegistry,
   AgentRuntime,
+  BudgetGuard,
   Clock,
   ContextPacker,
   EventBus,
@@ -68,6 +69,12 @@ export interface PlanningServiceOptions {
   readonly extraTestRunners?: () => readonly string[]
   /** Tentativas de planejamento antes de devolver o item ao humano. */
   readonly maxPlanningAttempts: number
+  /**
+   * Orçamento do run. O Planner é uma sessão de modelo como qualquer outra e
+   * precisa entrar no INV-7 — inclusive quando o plano é rejeitado, porque a
+   * tentativa rejeitada custou igual.
+   */
+  readonly budget?: BudgetGuard
 }
 
 export interface PlanningResult {
@@ -322,6 +329,14 @@ export class PlanningService {
       },
       signal,
     )
+
+    // Antes de qualquer saída de erro: a tentativa de planejamento gastou
+    // tokens mesmo quando o plano é inútil, e é assim que ela entra no INV-7.
+    this.options.budget?.consume({
+      usage: output.usage,
+      cost: output.cost,
+      wallclockMs: Math.max(0, this.options.clock.now() - now),
+    })
 
     if (output.structured === undefined) {
       return err(

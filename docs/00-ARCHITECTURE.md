@@ -383,6 +383,8 @@ Project ──┬── Backlog ──── Epic ──── BacklogItem
 | `executors` | Sandbox (worktree), shell cross-platform, `Verifier`              | escolher o que executar  |
 | `providers` | Adaptadores de modelo, normalização de eventos, custo             | orquestrar               |
 | `plugins`   | Loader, registry, validação de manifesto, SDK                     | comportamento específico |
+| `telemetry` | Métricas, preços versionados, custo real, estado vivo             | observar sem interferir  |
+| `dashboard` | Servidor do painel: SSE, leitura, fila de aprovações              | observador puro          |
 | `backlog`   | Ingestão e normalização de backlog (arquivo, GitHub, Linear…)     | planejar                 |
 | `vcs`       | git + hosts (GitHub/GitLab): branch, commit, PR                   | política de integração   |
 | `rules`     | Motor de regras/policies declarativas do projeto                  | aplicar sozinho          |

@@ -1,0 +1,35 @@
+{
+  "name": "@uranus/dashboard",
+  "version": "0.1.0",
+  "description": "Uranus - dashboard web: estado vivo, custo, qualidade e fila de aprovações.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "uranus-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "public"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "clean": "tsc -b tsconfig.build.json --clean"
+  },
+  "dependencies": {
+    "@uranus/core": "workspace:*",
+    "@uranus/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@uranus/testkit": "workspace:*",
+    "@uranus/events": "workspace:*"
+  }
+}

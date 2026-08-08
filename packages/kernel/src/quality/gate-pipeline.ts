@@ -1,6 +1,7 @@
 import type {
   AgentRegistry,
   AgentRuntime,
+  BudgetGuard,
   Clock,
   ContextPacker,
   DiffSummary,
@@ -49,6 +50,15 @@ export interface GatePipelineOptions {
   readonly contextBudgetTokens: number
   readonly gates: readonly GateDefinition[]
   readonly policy: GatePolicy
+  /**
+   * Orçamento do run.
+   *
+   * Sem isto, a cadeia de qualidade gastava fora do INV-7: cada gate é uma
+   * sessão de modelo, e um limite de custo que ignora dois terços do gasto não
+   * é um limite. É opcional apenas para não quebrar chamadores antigos — a
+   * composição sempre injeta.
+   */
+  readonly budget?: BudgetGuard
 }
 
 /**
@@ -201,6 +211,14 @@ export class GatePipeline {
       })
       return undefined
     }
+
+    // Custo do gate entra no orçamento e na contabilidade. Um gate é uma
+    // sessão de modelo como qualquer outra.
+    this.options.budget?.consume({
+      usage: output.usage,
+      cost: output.cost,
+      wallclockMs: Math.round(this.options.clock.monotonic() - started),
+    })
 
     const findings = extractFindings(output.structured, gate.agent)
     return applyGatePolicy(

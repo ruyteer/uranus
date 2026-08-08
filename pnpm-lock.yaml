@@ -82,6 +82,9 @@ importers:
       '@uranus/core':
         specifier: workspace:*
         version: link:../core
+      '@uranus/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@uranus/events':
         specifier: workspace:*
         version: link:../events
@@ -112,6 +115,9 @@ importers:
       '@uranus/state':
         specifier: workspace:*
         version: link:../state
+      '@uranus/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       '@uranus/vcs':
         specifier: workspace:*
         version: link:../vcs
@@ -163,6 +169,22 @@ importers:
       '@types/picomatch':
         specifier: ^3.0.1
         version: 3.0.2
+
+  packages/dashboard:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@uranus/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+    devDependencies:
+      '@uranus/events':
+        specifier: workspace:*
+        version: link:../events
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
 
   packages/events:
     dependencies:
@@ -313,6 +335,19 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/telemetry:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@uranus/events':
+        specifier: workspace:*
+        version: link:../events
       '@uranus/testkit':
         specifier: workspace:*
         version: link:../testkit

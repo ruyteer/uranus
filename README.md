@@ -26,6 +26,7 @@ qualidade → commit → PR, com recuperação exata após interrupção. Roda c
 - [Como funciona](#como-funciona)
 - [Agentes](#agentes)
 - [Plugins](#plugins)
+- [Dashboard e custo](#dashboard-e-custo)
 - [Solução de problemas](#solução-de-problemas)
 - [Desenvolvimento do framework](#desenvolvimento-do-framework)
 
@@ -234,6 +235,15 @@ detecta a edição manual e respeita a sua correção.
 | `uranus plugin list`        | Quais plugins ativaram, quais não, e o motivo de cada um.         |
 | `uranus plugin info <id>`   | Manifesto, permissões pedidas e o que o plugin registrou de fato. |
 | `uranus plugin check <dir>` | Audita um plugin **antes** de instalar: permissões e capacidades. |
+
+### Dashboard e custo
+
+| Comando                         | O que faz                                            |
+| ------------------------------- | ---------------------------------------------------- |
+| `uranus dashboard`              | Sobe o painel web em `localhost:4319`.               |
+| `uranus start --dashboard`      | Roda o kernel com o painel aberto ao lado.           |
+| `uranus cost`                   | Custo do processo por agente e por modelo.           |
+| `uranus cost reconcile <valor>` | Compara o total contabilizado com a sua fatura real. |
 
 ---
 
@@ -701,6 +711,118 @@ capacidade a menos, nunca derrubado.
 
 ---
 
+## Dashboard e custo
+
+```bash
+uranus start --dashboard
+```
+
+O painel abre em `http://localhost:4319` e mostra o run acontecendo. Ele é um **observador puro**:
+tudo o que aparece ali foi derivado do log de eventos, então nada no painel pode ser verdade sem ter
+acontecido de verdade. Ligá-lo não muda o comportamento do kernel.
+
+### Os nove painéis
+
+| Painel         | O que responde                                                           |
+| -------------- | ------------------------------------------------------------------------ |
+| **Agora**      | Custo do run, orçamento consumido, tasks restantes, atividade recente.   |
+| **Fila**       | Toda task com estado, agente, tentativas, custo e motivo do bloqueio.    |
+| **Timeline**   | O log de eventos, colorido por severidade.                               |
+| **Qualidade**  | Gates executados, bloqueios, achados e taxa de aprovação dos checks.     |
+| **Custo**      | Total, projeção, por agente, por modelo, por task, série de 14 dias.     |
+| **Git**        | Commits e pull requests abertos, com o diff resumido.                    |
+| **Memória**    | Memórias gravadas, conflitos, compactações, planos aceitos e rejeitados. |
+| **Aprovações** | Fila de aprovações pendentes, com botão de aprovar e negar.              |
+| **Saúde**      | Providers degradados ou em rate limit, falhas de plugin, spans recentes. |
+
+### Aprovar pela interface
+
+Quando o kernel pede aprovação humana — merge, force-push, mudança de CI, migração, dependência
+nova, estouro de orçamento —, ele **bloqueia** e a aprovação aparece no painel com o diff e o risco.
+Um clique libera a task. A decisão vai para o log com autor `dashboard`: aprovação sem autor
+rastreável seria carimbo, não supervisão.
+
+### Onde o painel escuta
+
+Por padrão, `127.0.0.1`. O painel mostra o seu código e concede aprovações, então expor na rede é
+uma decisão consciente, não um default herdado — fora de loopback o servidor **exige token e se
+recusa a subir sem ele**:
+
+```yaml
+telemetry:
+  dashboard:
+    enabled: true # sobe junto com `uranus start`
+    port: 4319
+    host: 0.0.0.0
+    token: um-token-longo-e-aleatorio
+```
+
+A página não carrega nada de origem externa (o CSP proíbe), e toda resposta passa pela redação de
+segredos antes de sair.
+
+### O custo é o do provider, não a nossa estimativa
+
+A contabilidade usa o `usage` real reportado pelo provider. Quando o provider reporta o valor em
+dinheiro — o Claude Code CLI reporta `total_cost_usd` —, é esse número que entra; a tabela de preços
+é o plano B, usada só para providers que não reportam custo.
+
+Isso importa porque **a cadeia de qualidade multiplica o custo por task**. Cada gate é uma sessão de
+modelo, e o painel mostra a repartição:
+
+```
+Por agente:
+  executor    $1.6800   4 sessões
+  reviewer    $0.0000   4 sessões     ← modelo local
+  security    $0.0000   4 sessões     ← modelo local
+```
+
+A tabela de preços embutida é um retrato de preços públicos e envelhece. Corrija sem esperar
+release:
+
+```yaml
+telemetry:
+  pricing:
+    anthropic:
+      - model: claude-sonnet
+        inputPerMillion: 3
+        outputPerMillion: 15
+        effectiveFrom: '2026-01-01'
+```
+
+Preços são **versionados por data**: um run de três meses atrás continua sendo reprecificado com o
+preço daquela época, em vez de o histórico mudar sozinho a cada reajuste.
+
+Quando a fatura chegar, feche o ciclo:
+
+```bash
+uranus cost reconcile 42.17
+```
+
+```
+Uranus reportou: $41.8300
+Fatura:          $42.1700
+Diferença:       -0.8%
+
+Dentro da tolerância de ±3%.
+```
+
+Fora da tolerância, a causa mais comum é um modelo sem preço na tabela. O Uranus avisa em tempo de
+execução quando isso acontece (`sem preço conhecido para o modelo`) — silenciar seria o jeito mais
+discreto de o relatório sair menor que a conta.
+
+### Métricas para fora
+
+`GET /api/metrics` expõe o formato Prometheus. Para OpenTelemetry:
+
+```yaml
+telemetry:
+  otlpEndpoint: http://localhost:4318
+```
+
+O exportador é best-effort por definição: coletor fora do ar não atrasa nem derruba um run.
+
+---
+
 ## Solução de problemas
 
 **`uranus doctor` diz que o `claude` falhou**
@@ -773,6 +895,8 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 | `@uranus/providers` | Claude Code headless, `ApiProvider` (OpenAI-compatible e modelos locais), roteamento por papel, circuit breaker. |
 | `@uranus/agents`    | Runtime de agentes e catálogo declarativo.                                                                       |
 | `@uranus/plugins`   | Loader, varredura de capacidades, SDK e plugins `node`/`nextjs`/`docker`.                                        |
+| `@uranus/telemetry` | Métricas, spans, preços versionados, custo real e o estado vivo derivado dos eventos.                            |
+| `@uranus/dashboard` | Servidor do painel: SSE, API de leitura e fila de aprovações.                                                    |
 | `@uranus/kernel`    | O ciclo, planejamento, cadeia de qualidade, recuperação.                                                         |
 | `@uranus/cli`       | Interface de terminal e composition root.                                                                        |
 
@@ -783,8 +907,8 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 
 ### Roadmap
 
-Fases 1–6 e 8 (multi-provider) concluídas. A seguir: telemetria e dashboard web (7),
-multi-projeto e hardening 1.0 (9).
+Fases 1–8 concluídas. Falta a 9: multi-projeto simultâneo, paralelismo real com lease de arquivo,
+endurecimento para runs de 8 horas e o 1.0.
 
 ---
 

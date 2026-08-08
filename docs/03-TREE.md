@@ -188,7 +188,12 @@ uranus/
 │   │       └── builtin/{node,nextjs,docker}.ts
 │   │
 │   ├── telemetry/                       # @uranus/telemetry                             [F7]
-│   │   └── src/{metrics,tracing,cost,pricing-table,exporters/*}.ts
+│   │   └── src/
+│   │       ├── metrics.ts               # cardinalidade limitada + spans encadeados
+│   │       ├── pricing.ts  cost.ts      # preços versionados, custo real, reconciliação
+│   │       ├── accounting.ts            # eventos → contabilidade (Executor + gates + planner)
+│   │       ├── aggregator.ts            # estado vivo derivado do log
+│   │       └── otlp.ts
 │   │
 │   ├── testkit/                         # @uranus/testkit                               [F1]
 │   │   └── src/
