@@ -11,13 +11,15 @@ import type {
   SessionResult,
   TokenUsage,
 } from '@uranus/core'
-import { EMPTY_USAGE, newSessionId, usd } from '@uranus/core'
+import { EMPTY_USAGE, newSessionId, tryParseJson, usd } from '@uranus/core'
 
 export interface ScriptedBehavior {
   /** Arquivos a escrever no workdir (path relativo → conteúdo). */
   readonly writes?: Readonly<Record<string, string>>
   /** Texto final "do modelo". */
   readonly text?: string
+  /** Saída estruturada explícita. Sem isto, é extraída de `text` quando há schema. */
+  readonly structured?: unknown
   readonly status?: SessionResult['status']
   readonly usage?: TokenUsage
   readonly costUsd?: number
@@ -29,7 +31,8 @@ const FAKE_CAPS: ProviderCapabilities = Object.freeze({
   streaming: true,
   nativeFileEditing: true,
   toolUse: true,
-  structuredOutput: false,
+  // Espelha o ClaudeCodeProvider: estruturado por extração do texto final.
+  structuredOutput: true,
   resumableSessions: false,
   vision: false,
   maxContextTokens: 200_000,
@@ -94,9 +97,18 @@ class ScriptedSession implements ProviderSession {
     }
     behavior.act?.(request.workdir, request)
 
+    const text = behavior.text ?? 'Tarefa implementada.'
+    // Mesmo caminho do provider real: quando há schema, a saída estruturada é
+    // extraída do texto. Assim o teste exercita a extração, não a contorna.
+    const structured =
+      request.outputSchema === undefined
+        ? behavior.structured
+        : (behavior.structured ?? tryParseJson(text))
+
     this.result_ = {
       status: behavior.status ?? 'completed',
-      text: behavior.text ?? 'Tarefa implementada.',
+      text,
+      ...(structured === undefined ? {} : { structured }),
       usage: behavior.usage ?? { ...EMPTY_USAGE, input: 1_000, output: 500 },
       cost: usd(behavior.costUsd ?? 0.01),
       turns: 1,

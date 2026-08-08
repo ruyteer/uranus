@@ -1,7 +1,7 @@
 {
-  "name": "@uranus/agents",
+  "name": "@uranus/backlog",
   "version": "0.1.0",
-  "description": "Uranus - runtime de agentes declarativos e catalogo.",
+  "description": "Uranus - backlog, validacao deterministica de planos e materializacao em tasks.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,9 +24,8 @@
     "clean": "tsc -b tsconfig.build.json --clean"
   },
   "dependencies": {
-    "@uranus/backlog": "workspace:*",
     "@uranus/core": "workspace:*",
-    "@uranus/prompts": "workspace:*"
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@uranus/testkit": "workspace:*"

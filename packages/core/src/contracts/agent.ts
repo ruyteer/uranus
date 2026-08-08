@@ -85,6 +85,12 @@ export interface AgentRunContext {
   readonly context: ContextPack
   readonly provider: Provider
   readonly logger: Logger
+  /**
+   * Variáveis extras para o render do prompt, sobrepostas às derivadas da task.
+   * É como agentes com template próprio (ex.: Planner) recebem seus dados sem
+   * que o runtime precise conhecer cada agente.
+   */
+  readonly promptVariables?: Readonly<Record<string, string>>
 }
 
 export interface AgentOutput {

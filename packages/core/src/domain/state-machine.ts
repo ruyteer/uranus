@@ -25,7 +25,11 @@ import { isTerminal } from './task.js'
  */
 
 const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = Object.freeze({
-  draft: ['ready', 'abandoned'],
+  // `draft → blocked` é obrigatório: uma task devolvida para replanejamento
+  // cujo plano não pode ser produzido (sem Planner, ou plano inválido demais)
+  // precisa de saída. Sem esta aresta ela ficava presa em `draft` e o kernel
+  // girava para sempre tentando replanejá-la.
+  draft: ['ready', 'blocked', 'abandoned'],
   ready: ['claimed', 'blocked', 'abandoned'],
   // `claimed → ready` é a devolução do lease sem execução (ex.: kernel pausado).
   claimed: ['running', 'ready', 'blocked', 'abandoned'],

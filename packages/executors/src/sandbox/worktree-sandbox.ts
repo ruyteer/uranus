@@ -34,6 +34,27 @@ interface WorkspaceMarker {
 const MARKER_FILE = '.uranus-workspace.json'
 
 /**
+ * Garante que `.uranus/` é invisível para o git do projeto.
+ *
+ * Precisa rodar no `init` e na composição — não apenas ao criar o primeiro
+ * worktree. Caso contrário, qualquer `git status` entre o init e a primeira
+ * task mostra `.uranus/` como não-rastreado, e uma task que rode `git status`
+ * na verificação vê o repositório sujo por causa do próprio harness.
+ */
+export async function ensureUranusIgnored(uranusDir: string): Promise<void> {
+  const path = join(uranusDir, '.gitignore')
+  try {
+    await readFile(path, 'utf8')
+  } catch {
+    await mkdir(uranusDir, { recursive: true })
+    // `*` puro: o diretório inteiro fica fora do git do projeto, sem exigir
+    // nada do usuário. Commitar config/memory exige `git add -f` (Fase 3 troca
+    // por negações explícitas quando houver fluxo de commit de memória).
+    await writeFile(path, '*\n')
+  }
+}
+
+/**
  * Sandbox por git worktree (ADR-005, INV-5).
  *
  * Diretórios curtos (`.uranus/w/<8 chars>`) por causa do limite de 260 chars do
@@ -63,9 +84,7 @@ export class WorktreeSandbox implements Sandbox {
   }
 
   async acquire(task: Task, _signal: AbortSignal): Promise<Result<Workspace>> {
-    // `.uranus/` fica dentro do repo do usuário; sem isto, todo `git status`
-    // do projeto ficaria sujo com os worktrees e o estado do harness.
-    await this.ensureUranusIgnored()
+    await ensureUranusIgnored(this.project.uranusDir)
 
     const head = await this.vcs.head(this.project.rootDir)
     if (!head.ok) return err(head.error)
@@ -175,20 +194,6 @@ export class WorktreeSandbox implements Sandbox {
   async orphans(activeTaskIds: ReadonlySet<string>): Promise<readonly WorkspaceRef[]> {
     const all = await this.list()
     return all.filter((ref) => ref.taskId === undefined || !activeTaskIds.has(ref.taskId))
-  }
-
-  private async ensureUranusIgnored(): Promise<void> {
-    const path = join(this.project.uranusDir, '.gitignore')
-    try {
-      await readFile(path, 'utf8')
-    } catch {
-      await mkdir(this.project.uranusDir, { recursive: true })
-      // `*` puro: .uranus/ inteiro fica invisível para o git do projeto, sem
-      // exigir nada do usuário. Custo aceito na F2: commitar config/memory
-      // exige `git add -f`. A Fase 3 troca por negações explícitas quando o
-      // fluxo de commit de memória existir.
-      await writeFile(path, '*\n')
-    }
   }
 
   private async excludeMarkerInWorktree(worktreeDir: string): Promise<void> {

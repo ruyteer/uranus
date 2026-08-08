@@ -1,5 +1,6 @@
 export * from './kernel.js'
 export * from './scheduler.js'
+export * from './planning/planning-service.js'
 export * from './support/minimal-context.js'
 export * from './support/stubs.js'
 export * from './guards/budget-guard.js'

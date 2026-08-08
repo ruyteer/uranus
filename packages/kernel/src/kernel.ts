@@ -9,6 +9,7 @@ import type {
   KernelSnapshot,
   KernelStatus,
   Lease,
+  ProjectDigest,
   ProjectRef,
   Provider,
   Result,
@@ -58,10 +59,23 @@ export interface KernelConfig {
   readonly commitTrailer?: string
 }
 
+/**
+ * Replanejador injetado (Fase 4). Opcional: sem ele, uma task em `draft`
+ * fica aguardando decisão humana em vez de ser decomposta automaticamente.
+ */
+export interface Replanner {
+  replanTask(
+    task: Task,
+    digest: ProjectDigest | undefined,
+    signal: AbortSignal,
+  ): Promise<Result<{ created: readonly Task[] }>>
+}
+
 export interface UranusKernelOptions {
   readonly deps: KernelDeps
   readonly project: ProjectRef
   readonly config: KernelConfig
+  readonly replanner?: Replanner
 }
 
 /**
@@ -104,6 +118,7 @@ export class UranusKernel implements Kernel {
   private readonly deps: KernelDeps
   private readonly project: ProjectRef
   private readonly config: KernelConfig
+  private readonly replanner: Replanner | undefined
 
   private runId: RunId | undefined
   private state: KernelStatus['state'] = 'idle'
@@ -128,6 +143,7 @@ export class UranusKernel implements Kernel {
     this.deps = options.deps
     this.project = options.project
     this.config = options.config
+    this.replanner = options.replanner
     this.events = options.deps.events
   }
 
@@ -294,7 +310,20 @@ export class UranusKernel implements Kernel {
     const stats = await queue.stats()
     this.queueStatsCache = stats
 
-    // Fila drenada? (nada ready/draft/ativo — só terminais e bloqueados)
+    const digest = await this.deps.contextManager.digest(this.project)
+
+    // 1.5 — replanejamento: tasks em `draft` são decompostas antes de tudo.
+    // Sem isto, um replan deixaria a task parada para sempre (comportamento da
+    // Fase 2, agora fechado).
+    if (stats.byState.draft > 0) {
+      const replanned = await this.drainDraftTasks(digest)
+      if (replanned) {
+        await this.checkpointNow()
+        return 'worked'
+      }
+    }
+
+    // Fila drenada? (nada ready/ativo — só terminais e bloqueados)
     const workable =
       stats.byState.ready +
       stats.byState.claimed +
@@ -311,7 +340,6 @@ export class UranusKernel implements Kernel {
     // 2 — select
     this.phase = 'select'
     crashPoint('select')
-    const digest = await this.deps.contextManager.digest(this.project)
     const context = {
       now,
       stats,
@@ -364,6 +392,70 @@ export class UranusKernel implements Kernel {
     // 9 — checkpoint (INV-4: todo tick termina aqui)
     await this.checkpointNow()
     return 'worked'
+  }
+
+  /**
+   * Decompõe tasks em `draft` via replanejador. Sem replanejador injetado,
+   * bloqueia com motivo acionável — nunca deixa a task em limbo silencioso.
+   */
+  private async drainDraftTasks(digest: ProjectDigest | undefined): Promise<boolean> {
+    const drafts = await this.deps.tasks.byState('draft')
+    if (drafts.length === 0) return false
+
+    let progressed = false
+
+    for (const task of drafts) {
+      if (this.abort.signal.aborted) break
+
+      if (this.replanner === undefined) {
+        await this.blockTask(
+          task,
+          'human',
+          'Task devolvida para replanejamento, mas nenhum Planner está configurado.',
+        )
+      } else {
+        this.deps.logger.info('Replanejando task', { taskId: task.id, title: task.title })
+        const result = await this.replanner.replanTask(task, digest, this.abort.signal)
+        if (result.ok) {
+          await this.events.emit(
+            'TaskReplanned',
+            {
+              taskId: task.id,
+              reason: `decomposta em ${String(result.value.created.length)} tasks`,
+            },
+            { runId: this.runId!, taskId: task.id },
+          )
+        } else {
+          await this.blockTask(
+            task,
+            'human',
+            `Replanejamento falhou: ${result.error.message.slice(0, 300)}`,
+          )
+        }
+      }
+
+      // Só conta como progresso se a task REALMENTE saiu de `draft`. Sem esta
+      // verificação, uma transição recusada faria o tick reportar trabalho e o
+      // loop giraria para sempre sobre a mesma task.
+      const after = await this.deps.tasks.find(task.id)
+      if (after?.state !== 'draft') progressed = true
+      else {
+        this.deps.logger.error('Task presa em draft após replanejamento; abandonando', {
+          taskId: task.id,
+        })
+        const abandoned = transition(task, 'abandoned', { at: this.deps.clock.now() })
+        if (abandoned.ok) {
+          await this.deps.queue.update(abandoned.value)
+          await this.events.emit(
+            'TaskAbandoned',
+            { taskId: task.id, reason: 'não foi possível replanejar nem bloquear' },
+            { runId: this.runId!, taskId: task.id },
+          )
+          progressed = true
+        }
+      }
+    }
+    return progressed
   }
 
   private async admit(task: Task): Promise<Result<{ agent: AgentSpec; provider: Provider }>> {
@@ -902,7 +994,7 @@ export class UranusKernel implements Kernel {
 
   private async blockTask(
     task: Task,
-    kind: 'budget' | 'permission' | 'provider',
+    kind: 'budget' | 'permission' | 'provider' | 'human',
     message: string,
   ): Promise<void> {
     const now = this.deps.clock.now()

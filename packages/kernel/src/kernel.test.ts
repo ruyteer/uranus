@@ -128,8 +128,11 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
         const final = await stack.state.tasks.find(task.id)
         // NUNCA done — esse é o teste inteiro do INV-2.
         expect(final?.state).not.toBe('done')
-        // no-changes duas vezes ⇒ replan (draft aguardando o Planner da F4).
-        expect(final?.state).toBe('draft')
+        // `no-changes` duas vezes ⇒ replan. Sem Planner configurado neste
+        // stack, o kernel bloqueia com motivo em vez de deixar em limbo
+        // (comportamento da Fase 4; a Fase 2 deixava preso em `draft`).
+        expect(final?.state).toBe('blocked')
+        expect(final?.blockReason?.message).toContain('Planner')
 
         const attempts = await stack.state.attempts.byTask(task.id)
         expect(attempts.length).toBeGreaterThanOrEqual(2)

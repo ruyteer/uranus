@@ -20,6 +20,8 @@
     { "path": "../agents/tsconfig.build.json" },
     { "path": "../kernel/tsconfig.build.json" },
     { "path": "../context/tsconfig.build.json" },
-    { "path": "../memory/tsconfig.build.json" }
+    { "path": "../memory/tsconfig.build.json" },
+    { "path": "../backlog/tsconfig.build.json" },
+    { "path": "../scheduler/tsconfig.build.json" }
   ]
 }

@@ -14,6 +14,7 @@ import type {
 } from '@uranus/core'
 import { EMPTY_USAGE, estimateTokens, newSessionId, usd } from '@uranus/core'
 import { renderContextPack } from '../render-context.js'
+import { appendSchemaInstruction, extractJson } from '../structured.js'
 import { locateClaudeBinary } from './locate.js'
 import { parseClaudeLine, type StreamParseState } from './stream.js'
 
@@ -30,7 +31,9 @@ const CAPABILITIES: ProviderCapabilities = Object.freeze({
   streaming: true,
   nativeFileEditing: true,
   toolUse: true,
-  structuredOutput: false,
+  // Não é nativo: implementado por instrução no prompt + extração do texto
+  // (ver `structured.ts`). O `SchemaCheck` do agente é quem valida de fato.
+  structuredOutput: true,
   resumableSessions: true,
   vision: true,
   maxContextTokens: 200_000,
@@ -85,8 +88,11 @@ export class ClaudeCodeProvider implements Provider {
 
   createSession(request: SessionRequest, signal: AbortSignal): Promise<ProviderSession> {
     const contextText = renderContextPack(request.context)
-    const prompt =
-      contextText.length > 0 ? `${contextText}\n\n${request.instruction}` : request.instruction
+    const instruction =
+      request.outputSchema === undefined
+        ? request.instruction
+        : appendSchemaInstruction(request.instruction, request.outputSchema)
+    const prompt = contextText.length > 0 ? `${contextText}\n\n${instruction}` : instruction
 
     const args: string[] = [
       '-p',
@@ -113,6 +119,7 @@ export class ClaudeCodeProvider implements Provider {
     }
     args.push(...this.extraArgs)
 
+    const expectsStructured = request.outputSchema !== undefined
     const child = this.shell.spawn(
       {
         command: this.binary,
@@ -129,7 +136,7 @@ export class ClaudeCodeProvider implements Provider {
       signal,
     )
 
-    return Promise.resolve(new ClaudeCodeSession(child, this, this.logger))
+    return Promise.resolve(new ClaudeCodeSession(child, this, this.logger, expectsStructured))
   }
 
   estimateCost(usage: TokenUsage, model: string): Money {
@@ -169,6 +176,7 @@ class ClaudeCodeSession implements ProviderSession {
     private readonly child: ShellProcess,
     private readonly provider: ClaudeCodeProvider,
     private readonly logger: Logger,
+    private readonly expectsStructured = false,
   ) {}
 
   async *stream(): AsyncIterable<ProviderEvent> {
@@ -216,9 +224,13 @@ class ClaudeCodeSession implements ProviderSession {
         })
       }
 
+      const text = meta?.resultText ?? shell.stdout.slice(-4_000)
+      const structured = this.expectsStructured ? extractJson(text) : undefined
+
       return {
         status,
-        text: meta?.resultText ?? shell.stdout.slice(-4_000),
+        text,
+        ...(structured === undefined ? {} : { structured }),
         usage,
         cost:
           meta !== undefined && meta.costUsd > 0

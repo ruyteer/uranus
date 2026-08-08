@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "@uranus/cli",
   "version": "0.1.0",
   "description": "Uranus - CLI: init, task, start, status, logs, doctor.",
@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@uranus/agents": "workspace:*",
+    "@uranus/backlog": "workspace:*",
     "@uranus/config": "workspace:*",
     "@uranus/context": "workspace:*",
     "@uranus/core": "workspace:*",
@@ -38,6 +39,7 @@
     "@uranus/prompts": "workspace:*",
     "@uranus/providers": "workspace:*",
     "@uranus/queue": "workspace:*",
+    "@uranus/scheduler": "workspace:*",
     "@uranus/state": "workspace:*",
     "@uranus/vcs": "workspace:*",
     "commander": "^13.0.0",

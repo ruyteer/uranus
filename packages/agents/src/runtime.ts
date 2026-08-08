@@ -93,6 +93,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
     const { task, workspace } = context
 
     const system = unwrap(this.prompts.render(spec.prompts.system, {}))
+    // Variáveis derivadas da task + as fornecidas pelo chamador (que vencem).
     const instruction = unwrap(
       this.prompts.render(spec.prompts.instruction, {
         title: task.title,
@@ -100,6 +101,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
         touches: task.touches.join('\n'),
         acceptance: describeContract(task.acceptance.checks),
         failureContext: renderFailureContext(this.prompts, context),
+        ...context.promptVariables,
       }),
     )
 
@@ -111,6 +113,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
       workdir: workspace.rootDir,
       permissions: effectivePermissions(spec, task.touches),
       limits: spec.limits,
+      ...(spec.outputs.schema === undefined ? {} : { outputSchema: spec.outputs.schema }),
       metadata: {
         taskId: task.id,
         attemptId: context.attempt.id,

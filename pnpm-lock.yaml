@@ -34,6 +34,9 @@ importers:
 
   packages/agents:
     dependencies:
+      '@uranus/backlog':
+        specifier: workspace:*
+        version: link:../backlog
       '@uranus/core':
         specifier: workspace:*
         version: link:../core
@@ -45,11 +48,27 @@ importers:
         specifier: workspace:*
         version: link:../testkit
 
+  packages/backlog:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
+      yaml:
+        specifier: ^2.6.0
+        version: 2.9.0
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
   packages/cli:
     dependencies:
       '@uranus/agents':
         specifier: workspace:*
         version: link:../agents
+      '@uranus/backlog':
+        specifier: workspace:*
+        version: link:../backlog
       '@uranus/config':
         specifier: workspace:*
         version: link:../config
@@ -80,6 +99,9 @@ importers:
       '@uranus/queue':
         specifier: workspace:*
         version: link:../queue
+      '@uranus/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@uranus/state':
         specifier: workspace:*
         version: link:../state
@@ -160,6 +182,9 @@ importers:
 
   packages/kernel:
     dependencies:
+      '@uranus/backlog':
+        specifier: workspace:*
+        version: link:../backlog
       '@uranus/core':
         specifier: workspace:*
         version: link:../core
@@ -191,6 +216,9 @@ importers:
       '@uranus/queue':
         specifier: workspace:*
         version: link:../queue
+      '@uranus/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@uranus/testkit':
         specifier: workspace:*
         version: link:../testkit
@@ -241,6 +269,16 @@ importers:
       '@uranus/state':
         specifier: workspace:*
         version: link:../state
+    devDependencies:
+      '@uranus/testkit':
+        specifier: workspace:*
+        version: link:../testkit
+
+  packages/scheduler:
+    dependencies:
+      '@uranus/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@uranus/testkit':
         specifier: workspace:*

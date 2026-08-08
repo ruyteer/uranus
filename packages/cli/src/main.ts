@@ -24,6 +24,9 @@ program
     const uranusDir = join(dir, '.uranus')
     await mkdir(join(uranusDir, 'backlog'), { recursive: true })
     await mkdir(join(uranusDir, 'memory'), { recursive: true })
+    // `.uranus/` invisível para o git do projeto desde o primeiro instante.
+    const { ensureUranusIgnored } = await import('@uranus/executors')
+    await ensureUranusIgnored(uranusDir)
 
     const name = options.name ?? dir.split(/[\\/]/).at(-1) ?? 'projeto'
     const configPath = join(uranusDir, 'config.yaml')
@@ -125,6 +128,34 @@ task
   })
 
 task
+  .command('why <taskId>')
+  .description('Explica por que uma task está (ou não) sendo escolhida')
+  .action(async (taskId: string) => {
+    await withComposition(async ({ composition }) => {
+      const found = await composition.state.tasks.find(taskId as Task['id'])
+      if (found === undefined) {
+        console.error('Task não encontrada')
+        process.exitCode = 1
+        return
+      }
+      const { formatExplanation } = await import('@uranus/scheduler')
+      const now = systemClock.now()
+      const explanation = composition.deps.scheduler.explain(found, {
+        now,
+        stats: await composition.deps.queue.stats(),
+        budget: composition.deps.budget.state(),
+        activeLeases: await composition.deps.queue.activeLeases(now),
+        recentOutcomes: [],
+        mix: composition.config.scheduler.mix,
+        observedMix: {},
+        providerHealth: {},
+        restrictedMode: false,
+      })
+      console.log(formatExplanation(explanation, `${found.title} (${found.state})`))
+    })
+  })
+
+task
   .command('retry <taskId>')
   .description('Devolve uma task bloqueada para a fila')
   .action(async (taskId: string) => {
@@ -144,6 +175,126 @@ task
       }
       await composition.state.tasks.save(moved.value)
       console.log(`Task ${taskId} devolvida à fila.`)
+    })
+  })
+
+// ── backlog / plan ──────────────────────────────────────────────────────────
+
+const backlog = program.command('backlog').description('Itens de backlog do projeto')
+
+backlog
+  .command('add <title>')
+  .description('Adiciona um item ao backlog')
+  .option('--body <text>', 'descrição do que precisa ser feito', '')
+  .option('--label <label...>', 'labels')
+  .option('--priority <n>', 'prioridade 0-100', (v) => Number.parseInt(v, 10), 50)
+  .action(async (title: string, options: { body: string; label?: string[]; priority: number }) => {
+    await withComposition(async ({ composition }) => {
+      const added = await composition.backlog.add({
+        title,
+        body: options.body,
+        labels: options.label ?? [],
+        priority: options.priority,
+        createdAt: systemClock.now(),
+      })
+      if (!added.ok) {
+        console.error(`ERRO: ${added.error.message}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`Item criado: ${added.value.id}`)
+      console.log(
+        `Edite em .uranus/backlog/${added.value.id}.yaml ou rode: uranus plan ${added.value.id}`,
+      )
+    })
+  })
+
+backlog
+  .command('list')
+  .description('Lista itens do backlog')
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      const items = await composition.backlog.list()
+      if (items.length === 0) {
+        console.log('Backlog vazio. Use: uranus backlog add "título" --body "..."')
+        return
+      }
+      for (const item of items) {
+        const rejections =
+          item.lastRejections === undefined ? '' : ` [rejeitado: ${item.lastRejections.length}]`
+        console.log(
+          `${item.id.padEnd(40)} ${item.state.padEnd(8)} p${String(item.priority).padStart(3)}  ${item.title}${rejections}`,
+        )
+      }
+    })
+  })
+
+backlog
+  .command('import <path>')
+  .description('Importa itens de um arquivo Markdown (listas e seções)')
+  .action(async (path: string) => {
+    await withComposition(async ({ composition }) => {
+      const { readMarkdownBacklog } = await import('@uranus/backlog')
+      const parsed = await readMarkdownBacklog(resolve(path))
+      if (parsed.length === 0) {
+        console.log('Nenhum item reconhecido no arquivo.')
+        return
+      }
+      const result = await composition.backlog.importItems(
+        parsed.map((item) => ({ ...item, source: 'file' as const })),
+        systemClock.now(),
+      )
+      console.log(
+        `Importados: ${String(result.imported)} · ignorados (já existiam): ${String(result.skipped)}`,
+      )
+    })
+  })
+
+program
+  .command('plan <itemId>')
+  .description('Planeja um item de backlog, transformando-o em tasks')
+  .option('--dry-run', 'valida o plano sem enfileirar as tasks')
+  .action(async (itemId: string, options: { dryRun?: boolean }) => {
+    await withComposition(async ({ composition }) => {
+      const item = await composition.backlog.get(itemId)
+      if (item === undefined) {
+        console.error(`Item "${itemId}" não encontrado. Veja: uranus backlog list`)
+        process.exitCode = 1
+        return
+      }
+      if (options.dryRun === true) {
+        console.log('--dry-run ainda invoca o Planner (custa tokens), mas não enfileira nada.')
+      }
+
+      const digest = await composition.contextManager.digest(composition.project)
+      console.log(`Planejando "${item.title}"…`)
+
+      const result = await composition.planning.planItem(item, digest, new AbortController().signal)
+      if (!result.ok) {
+        console.error(`\nPlano rejeitado: ${result.error.message}`)
+        const { isUranusError } = await import('@uranus/core')
+        const rejections = isUranusError(result.error)
+          ? result.error.context['rejections']
+          : undefined
+        if (Array.isArray(rejections)) {
+          for (const rejection of rejections) console.error(`  • ${String(rejection)}`)
+        }
+        await composition.backlog.update({
+          ...item,
+          lastRejections: Array.isArray(rejections) ? rejections.map(String) : [],
+        })
+        process.exitCode = 1
+        return
+      }
+
+      console.log(`\n${result.value.summary}\n`)
+      for (const task of result.value.created) {
+        console.log(`  ${task.id}  ${task.kind.padEnd(9)} ${task.title}`)
+        console.log(`    escopo: ${task.touches.join(', ')}`)
+        console.log(`    checks: ${task.acceptance.checks.map((c) => c.kind).join(', ')}`)
+      }
+      await composition.backlog.update({ ...item, state: 'planned', planId: result.value.planId })
+      console.log(`\n${String(result.value.created.length)} task(s) na fila. Rode: uranus start`)
     })
   })
 

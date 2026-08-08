@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+﻿import { join, resolve } from 'node:path'
 import type { Clock, KernelDeps, Logger, ProjectRef, Provider, UranusEvent } from '@uranus/core'
 import { newProjectId, systemClock, createLogger, usd } from '@uranus/core'
 import type { UranusConfig } from '@uranus/config'
@@ -12,6 +12,7 @@ import {
   artifactCheckImpl,
   commandCheckImpl,
   diffCheckImpl,
+  ensureUranusIgnored,
   schemaCheckImpl,
   testsCheckImpl,
 } from '@uranus/executors'
@@ -19,18 +20,25 @@ import { GitAdapter, GitHubHost } from '@uranus/vcs'
 import { SqlTaskQueue } from '@uranus/queue'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
 import { ClaudeCodeProvider, DefaultProviderRegistry } from '@uranus/providers'
-import { DefaultAgentRegistry, DefaultAgentRuntime, EXECUTOR_SPEC } from '@uranus/agents'
+import {
+  DefaultAgentRegistry,
+  DefaultAgentRuntime,
+  EXECUTOR_SPEC,
+  PLANNER_SPEC,
+} from '@uranus/agents'
 import {
   DefaultBudgetGuard,
   DefaultPermissionBroker,
   DefaultRecoveryManager,
   FileCheckpointManager,
   InMemoryHumanGate,
-  SimpleScheduler,
   InMemoryTelemetry,
+  PlanningService,
   UranusKernel,
   type KernelConfig,
 } from '@uranus/kernel'
+import { buildScheduler } from '@uranus/scheduler'
+import { FileBacklogStore } from '@uranus/backlog'
 import {
   DefaultContextManager,
   DefaultContextPacker,
@@ -58,13 +66,16 @@ export interface Composition {
   readonly eventStore: JsonlEventStore
   readonly contextManager: DefaultContextManager
   readonly memoryStore: MarkdownMemoryStore
+  readonly backlog: FileBacklogStore
+  readonly planning: PlanningService
+  readonly config: UranusConfig
   close(): Promise<void>
 }
 
 /**
- * Composition root — o ÚNICO lugar onde implementações concretas se encontram.
- * O kernel recebe tudo por injeção (zero singletons); trocar o provider, o
- * scheduler ou a memória é trocar uma linha aqui, não tocar no kernel.
+ * Composition root â€” o ÃšNICO lugar onde implementaÃ§Ãµes concretas se encontram.
+ * O kernel recebe tudo por injeÃ§Ã£o (zero singletons); trocar o provider, o
+ * scheduler ou a memÃ³ria Ã© trocar uma linha aqui, nÃ£o tocar no kernel.
  */
 export async function compose(options: CompositionOptions): Promise<Composition> {
   const clock = options.clock ?? systemClock
@@ -79,6 +90,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     uranusDir,
   }
 
+  await ensureUranusIgnored(uranusDir)
   const state = openState({ path: join(uranusDir, 'state.db'), now: clock.now() })
   const eventStore = await JsonlEventStore.open({ dir: join(uranusDir, 'events') })
   const events = new InProcessEventBus({
@@ -99,7 +111,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
   })
 
   // Verifier + checks builtin. O resolver de runner de testes vem da config:
-  // `providers.entries` não — é `context`? Runner do MVP: config simples.
+  // `providers.entries` nÃ£o â€” Ã© `context`? Runner do MVP: config simples.
   const checks = new DefaultCheckRegistry()
   checks.register(commandCheckImpl(shell))
   checks.register(diffCheckImpl(vcs))
@@ -115,14 +127,40 @@ export async function compose(options: CompositionOptions): Promise<Composition>
   const verifier = new DefaultVerifier({ checks, clock, logger })
 
   const queue = new SqlTaskQueue(state)
-  const scheduler = new SimpleScheduler(queue, options.config.scheduler.failureCooldownMs)
+
+  // Scheduler completo (Fase 4): pesos vÃªm da config; ajustar prioridade Ã©
+  // editar YAML. Estado das tasks e Ãºltima conclusÃ£o alimentam caminho crÃ­tico
+  // e localidade de contexto.
+  let lastCompletedTouches: readonly string[] = []
+  let taskCache: readonly Awaited<ReturnType<typeof state.tasks.all>>[number][] = []
+  const scheduler = buildScheduler({
+    queue,
+    logger,
+    weights: options.config.scheduler.weights,
+    failureCooldownMs: options.config.scheduler.failureCooldownMs,
+    wipLimit: options.config.scheduler.wipLimit,
+    taskState: () => taskCache,
+    lastCompletedTouches: () => lastCompletedTouches,
+  })
+  events.on('TickStarted', () => {
+    void state.tasks.all().then((tasks) => {
+      taskCache = tasks
+    })
+  })
+  events.on('TaskCompleted', (event) => {
+    void state.tasks.find(event.payload.taskId).then((task) => {
+      if (task !== undefined) lastCompletedTouches = task.touches
+    })
+  })
 
   const prompts = new DefaultPromptRegistry()
   registerBuiltinPrompts(prompts)
 
   const agents = new DefaultAgentRegistry()
-  const registered = agents.register(EXECUTOR_SPEC)
-  if (!registered.ok) throw registered.error
+  for (const spec of [EXECUTOR_SPEC, PLANNER_SPEC]) {
+    const registered = agents.register(spec)
+    if (!registered.ok) throw registered.error
+  }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
 
   const providers = new DefaultProviderRegistry({
@@ -187,11 +225,11 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     logger,
   })
 
-  // Contexto real (Fase 3): digest automático com cache por FreshnessKey.
+  // Contexto real (Fase 3): digest automÃ¡tico com cache por FreshnessKey.
   const contextManager = new DefaultContextManager({ shell, clock, logger, events })
   await contextManager.ensureFresh(project, new AbortController().signal)
 
-  // Memória real (Fase 3): Markdown + frontmatter em .uranus/memory/.
+  // MemÃ³ria real (Fase 3): Markdown + frontmatter em .uranus/memory/.
   const memoryStore = new MarkdownMemoryStore({
     dir: join(uranusDir, options.config.memory.dir),
     projectRootDir: rootDir,
@@ -268,10 +306,46 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     commitTrailer: options.config.project.vcs.commitTrailer,
   }
 
-  const kernel = new UranusKernel({ deps, project, config: kernelConfig })
+  const backlog = new FileBacklogStore({
+    dir: join(uranusDir, 'backlog'),
+    projectId: project.id,
+    logger,
+  })
+
+  const planning = new PlanningService({
+    project,
+    agents,
+    agentRuntime,
+    providers,
+    context: packer,
+    queue,
+    tasks: state.tasks,
+    events,
+    clock,
+    logger,
+    prompts,
+    providerId: options.providerOverride?.id ?? options.config.providers.default,
+    contextBudgetTokens: options.config.context.budgetTokens,
+    allowedPaths: options.config.permissions.fsWrite,
+    forbiddenPaths: options.config.permissions.fsDeny,
+    allowedCommands: options.config.permissions.execAllow,
+    maxTasksPerPlan: 12,
+    maxAttemptsPerTask: options.config.kernel.maxAttemptsPerTask,
+    maxPlanningAttempts: 2,
+  })
+
+  const kernel = new UranusKernel({
+    deps,
+    project,
+    config: kernelConfig,
+    replanner: planning,
+  })
 
   return {
     kernel,
+    backlog,
+    planning,
+    config: options.config,
     deps,
     project,
     state,

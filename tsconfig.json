@@ -1,4 +1,4 @@
-{
+﻿{
   "files": [],
   "references": [
     { "path": "packages/core/tsconfig.build.json" },
@@ -14,6 +14,8 @@
     { "path": "packages/agents/tsconfig.build.json" },
     { "path": "packages/kernel/tsconfig.build.json" },
     { "path": "packages/context/tsconfig.build.json" },
+    { "path": "packages/backlog/tsconfig.build.json" },
+    { "path": "packages/scheduler/tsconfig.build.json" },
     { "path": "packages/memory/tsconfig.build.json" },
     { "path": "packages/cli/tsconfig.build.json" }
   ]

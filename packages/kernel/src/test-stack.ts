@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+﻿import { join } from 'node:path'
 import type { Check, KernelDeps, ProjectRef, Task } from '@uranus/core'
 import { createLogger, newProjectId, newTaskId, nullSink, systemClock, usd } from '@uranus/core'
 import { InProcessEventBus, JsonlEventStore } from '@uranus/events'
@@ -11,18 +11,26 @@ import {
   artifactCheckImpl,
   commandCheckImpl,
   diffCheckImpl,
+  ensureUranusIgnored,
   schemaCheckImpl,
 } from '@uranus/executors'
 import { GitAdapter } from '@uranus/vcs'
 import { SqlTaskQueue } from '@uranus/queue'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
 import { DefaultProviderRegistry } from '@uranus/providers'
-import { DefaultAgentRegistry, DefaultAgentRuntime, EXECUTOR_SPEC } from '@uranus/agents'
+import {
+  DefaultAgentRegistry,
+  DefaultAgentRuntime,
+  EXECUTOR_SPEC,
+  PLANNER_SPEC,
+} from '@uranus/agents'
 import { ScriptedProvider, type ScriptedBehavior } from '@uranus/testkit'
 import { DefaultContextPacker, codeSource, digestSource } from '@uranus/context'
 import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
+import { buildScheduler } from '@uranus/scheduler'
+import { FileBacklogStore } from '@uranus/backlog'
 import { UranusKernel } from './kernel.js'
-import { SimpleScheduler } from './scheduler.js'
+import { PlanningService } from './planning/planning-service.js'
 import { InMemoryTelemetry, StaticContextManager } from './support/stubs.js'
 import { DefaultBudgetGuard } from './guards/budget-guard.js'
 import { DefaultPermissionBroker } from './guards/permission-broker.js'
@@ -31,11 +39,11 @@ import { FileCheckpointManager } from './checkpoint/manager.js'
 import { DefaultRecoveryManager } from './recovery/manager.js'
 
 /**
- * Montagem completa do kernel para testes de integração e caos.
+ * Montagem completa do kernel para testes de integraÃ§Ã£o e caos.
  *
- * É deliberadamente o espelho do composition root da CLI, com duas trocas:
- * `ScriptedProvider` no lugar do Claude Code e integração `branch-only`
- * (sem push/PR — o teste valida commit local).
+ * Ã‰ deliberadamente o espelho do composition root da CLI, com duas trocas:
+ * `ScriptedProvider` no lugar do Claude Code e integraÃ§Ã£o `branch-only`
+ * (sem push/PR â€” o teste valida commit local).
  */
 export interface TestStack {
   readonly kernel: UranusKernel
@@ -46,14 +54,24 @@ export interface TestStack {
   readonly provider: ScriptedProvider
   readonly telemetry: InMemoryTelemetry
   readonly memoryStore: MarkdownMemoryStore
+  readonly backlog: FileBacklogStore
+  readonly planning: PlanningService
   enqueue(task: Partial<Task> & { acceptance: Task['acceptance'] }): Promise<Task>
   close(): Promise<void>
+}
+
+export interface TestStackOptions {
+  readonly budgetUsd?: number
+  readonly maxAttempts?: number
+  readonly maxPlanningAttempts?: number
+  /** Liga o replanejamento automÃ¡tico de tasks em `draft` (Fase 4). */
+  readonly withReplanner?: boolean
 }
 
 export async function makeTestStack(
   repoDir: string,
   behaviors: readonly ScriptedBehavior[],
-  options: { budgetUsd?: number; maxAttempts?: number } = {},
+  options: TestStackOptions = {},
 ): Promise<TestStack> {
   const clock = systemClock
   const logger = createLogger({ level: 'silent', sink: nullSink })
@@ -65,6 +83,7 @@ export async function makeTestStack(
     uranusDir,
   }
 
+  await ensureUranusIgnored(uranusDir)
   const state = openState({ path: join(uranusDir, 'state.db'), now: clock.now() })
   const eventStore = await JsonlEventStore.open({ dir: join(uranusDir, 'events') })
   const events = new InProcessEventBus({ store: eventStore, clock, logger, projectId: project.id })
@@ -81,13 +100,22 @@ export async function makeTestStack(
   const verifier = new DefaultVerifier({ checks, clock, logger })
 
   const queue = new SqlTaskQueue(state)
-  const scheduler = new SimpleScheduler(queue, 0) // sem cooldown em teste
+  let taskCache: readonly Task[] = []
+  const scheduler = buildScheduler({
+    queue,
+    logger,
+    failureCooldownMs: 0, // sem cooldown em teste
+    taskState: () => taskCache,
+    lastCompletedTouches: () => [],
+  })
 
   const prompts = new DefaultPromptRegistry()
   registerBuiltinPrompts(prompts)
   const agents = new DefaultAgentRegistry()
-  const registered = agents.register(EXECUTOR_SPEC)
-  if (!registered.ok) throw registered.error
+  for (const spec of [EXECUTOR_SPEC, PLANNER_SPEC]) {
+    const registered = agents.register(spec)
+    if (!registered.ok) throw registered.error
+  }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
 
   const provider = new ScriptedProvider(behaviors)
@@ -132,8 +160,8 @@ export async function makeTestStack(
   await contextManager.bootstrap(project, new AbortController().signal)
   const telemetry = new InMemoryTelemetry()
 
-  // Packer e memória REAIS (Fase 3): o kernel de teste usa a mesma pilha que a
-  // CLI — o que o teste de integração exercita é o que roda em produção.
+  // Packer e memÃ³ria REAIS (Fase 3): o kernel de teste usa a mesma pilha que a
+  // CLI â€” o que o teste de integraÃ§Ã£o exercita Ã© o que roda em produÃ§Ã£o.
   const packer = new DefaultContextPacker({ clock, logger })
   packer.addSource(digestSource(contextManager))
   packer.addSource(codeSource())
@@ -190,6 +218,34 @@ export async function makeTestStack(
     },
   }
 
+  const backlog = new FileBacklogStore({
+    dir: join(uranusDir, 'backlog'),
+    projectId: project.id,
+    logger,
+  })
+
+  const planning = new PlanningService({
+    project,
+    agents,
+    agentRuntime,
+    providers,
+    context: packer,
+    queue,
+    tasks: state.tasks,
+    events,
+    clock,
+    logger,
+    prompts,
+    providerId: provider.id,
+    contextBudgetTokens: 20_000,
+    allowedPaths: ['src/**', 'test/**', 'tests/**', 'docs/**'],
+    forbiddenPaths: ['.github/**', '.env'],
+    allowedCommands: [],
+    maxTasksPerPlan: 8,
+    maxAttemptsPerTask: options.maxAttempts ?? 3,
+    maxPlanningAttempts: options.maxPlanningAttempts ?? 2,
+  })
+
   const kernel = new UranusKernel({
     deps,
     project,
@@ -202,6 +258,13 @@ export async function makeTestStack(
       integration: { strategy: 'branch-only', draftPullRequests: true, prBase: 'main' },
       providerId: provider.id,
     },
+    ...(options.withReplanner === true ? { replanner: planning } : {}),
+  })
+
+  events.on('TickStarted', () => {
+    void state.tasks.all().then((tasks) => {
+      taskCache = tasks
+    })
   })
 
   return {
@@ -213,6 +276,8 @@ export async function makeTestStack(
     provider,
     telemetry,
     memoryStore,
+    backlog,
+    planning,
     async enqueue(partial): Promise<Task> {
       const now = clock.now()
       const task: Task = {
@@ -220,7 +285,7 @@ export async function makeTestStack(
         projectId: project.id,
         kind: 'feature',
         title: 'Task de teste',
-        intent: 'Implementar a mudança de teste.',
+        intent: 'Implementar a mudanÃ§a de teste.',
         state: 'ready',
         priority: 50,
         deps: [],

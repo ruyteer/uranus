@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "@uranus/kernel",
   "version": "0.1.0",
-  "description": "Uranus - o ciclo determinístico: sense, select, admit, prepare, execute, verify, integrate, learn, checkpoint.",
+  "description": "Uranus - o ciclo deterministico: sense, select, admit, prepare, execute, verify, integrate, learn, checkpoint.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,12 +24,14 @@
     "clean": "tsc -b tsconfig.build.json --clean"
   },
   "dependencies": {
+    "@uranus/backlog": "workspace:*",
     "@uranus/core": "workspace:*",
     "@uranus/state": "workspace:*"
   },
   "devDependencies": {
     "@uranus/testkit": "workspace:*",
     "@uranus/context": "workspace:*",
+    "@uranus/scheduler": "workspace:*",
     "@uranus/memory": "workspace:*",
     "@uranus/events": "workspace:*",
     "@uranus/executors": "workspace:*",

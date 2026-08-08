@@ -1,7 +1,7 @@
 {
-  "name": "@uranus/agents",
+  "name": "@uranus/scheduler",
   "version": "0.1.0",
-  "description": "Uranus - runtime de agentes declarativos e catalogo.",
+  "description": "Uranus - priorizacao multi-criterio com politicas ponderadas e explicacao auditavel.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,9 +24,7 @@
     "clean": "tsc -b tsconfig.build.json --clean"
   },
   "dependencies": {
-    "@uranus/backlog": "workspace:*",
-    "@uranus/core": "workspace:*",
-    "@uranus/prompts": "workspace:*"
+    "@uranus/core": "workspace:*"
   },
   "devDependencies": {
     "@uranus/testkit": "workspace:*"
