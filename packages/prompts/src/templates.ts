@@ -98,6 +98,16 @@ export const PROMPT_IDS = {
 
 import type { DefaultPromptRegistry } from './registry.js'
 
+import {
+  BUGHUNTER_SYSTEM_V1,
+  QA_SYSTEM_V1,
+  QUALITY_PROMPT_IDS,
+  REVIEWER_SYSTEM_V1,
+  REVIEW_INSTRUCTION_V1,
+  SECURITY_SYSTEM_V1,
+  TESTING_SYSTEM_V1,
+} from './quality-templates.js'
+
 export function registerBuiltinPrompts(registry: DefaultPromptRegistry): void {
   registry.registerBody(PROMPT_IDS.executorSystem, '1.0.0', EXECUTOR_SYSTEM_V1)
   registry.registerBody(PROMPT_IDS.executorInstruction, '1.0.0', EXECUTOR_INSTRUCTION_V1)
@@ -105,4 +115,13 @@ export function registerBuiltinPrompts(registry: DefaultPromptRegistry): void {
   registry.registerBody(PROMPT_IDS.plannerSystem, '1.0.0', PLANNER_SYSTEM_V1)
   registry.registerBody(PROMPT_IDS.plannerInstruction, '1.0.0', PLANNER_INSTRUCTION_V1)
   registry.registerBody(PROMPT_IDS.replanContext, '1.0.0', REPLAN_CONTEXT_V1)
+
+  // Agentes de qualidade (Fase 5). Reviewer/Security/QA compartilham a mesma
+  // instrução — o que muda entre eles é o system prompt e a lente.
+  registry.registerBody(QUALITY_PROMPT_IDS.reviewerSystem, '1.0.0', REVIEWER_SYSTEM_V1)
+  registry.registerBody(QUALITY_PROMPT_IDS.securitySystem, '1.0.0', SECURITY_SYSTEM_V1)
+  registry.registerBody(QUALITY_PROMPT_IDS.qaSystem, '1.0.0', QA_SYSTEM_V1)
+  registry.registerBody(QUALITY_PROMPT_IDS.reviewInstruction, '1.0.0', REVIEW_INSTRUCTION_V1)
+  registry.registerBody(QUALITY_PROMPT_IDS.testingSystem, '1.0.0', TESTING_SYSTEM_V1)
+  registry.registerBody(QUALITY_PROMPT_IDS.bugHunterSystem, '1.0.0', BUGHUNTER_SYSTEM_V1)
 }

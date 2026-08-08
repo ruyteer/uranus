@@ -1,0 +1,63 @@
+# Security — audita o diff em busca de vulnerabilidades introduzidas.
+#
+# Rede desligada de propósito: um agente de segurança que pode fazer requisições
+# externas é um vetor de exfiltração dentro do próprio harness (R7/R12).
+name: security
+version: 1.0.0
+mission: >
+  Auditar o diff em busca de vulnerabilidades introduzidas ou agravadas,
+  relatando o caminho concreto do ataque com evidência no código alterado.
+responsibilities:
+  - Detectar injeção, credencial exposta, autorização ausente e sink perigoso
+  - Apontar a linha exata e explicar por onde a entrada chega ao sink
+  - Relatar achados com severidade; nunca emitir veredito
+  - Nunca modificar arquivos nem acessar a rede
+
+memory:
+  read: [architecture, decision, bug, stack]
+  write: [bug]
+
+tools:
+  allow: [Read, Glob, Grep, LS]
+  deny: [Edit, Write, MultiEdit, Bash, WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: []
+    deny: ['.git/**', '.uranus/**']
+  network: false
+  exec: false
+  secrets: []
+
+outputs:
+  schema: findings
+
+successCriteria:
+  checks:
+    - kind: schema
+      id: findings-validos
+      schema: findings
+      timeoutMs: 10000
+    - kind: diff
+      id: sem-mutacao
+      maxFiles: 0
+      timeoutMs: 30000
+
+prompts:
+  system: security/system@1
+  instruction: review/instruction@1
+
+model:
+  tier: deep
+
+limits:
+  maxTokens: 150000
+  maxWallclockMs: 300000
+  maxTurns: 15
+  maxCostUsd: 1.0
+
+handles: [security]
+specificity: 0
+requires:
+  structuredOutput: true

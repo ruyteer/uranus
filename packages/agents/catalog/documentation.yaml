@@ -1,0 +1,49 @@
+# Documentation — mantém docs sincronizados com o código.
+name: documentation
+version: 1.0.0
+mission: >
+  Manter README, docs e comentários de módulo alinhados com o comportamento
+  real do código, sem inventar funcionalidade que não existe.
+responsibilities:
+  - Atualizar documentação que ficou incorreta após mudanças no código
+  - Documentar comportamento observável, nunca intenção não implementada
+  - Preservar o tom e a estrutura da documentação existente
+
+memory:
+  read: [architecture, convention, decision, stack]
+  write: []
+
+tools:
+  allow: [Read, Glob, Grep, LS, Edit, Write]
+  deny: [Bash, WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: ['**/*.md', 'docs/**']
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: false
+
+successCriteria:
+  checks:
+    - kind: diff
+      id: produziu-mudanca
+      requireNonEmpty: true
+      timeoutMs: 30000
+
+prompts:
+  system: executor/system@1
+  instruction: executor/instruction@1
+
+model:
+  tier: fast
+
+limits:
+  maxTokens: 150000
+  maxWallclockMs: 300000
+  maxTurns: 20
+  maxCostUsd: 0.5
+
+handles: [docs]
+specificity: 5

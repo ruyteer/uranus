@@ -3,7 +3,11 @@ import type {
   AgentOutput,
   AgentSpec,
   Attempt,
+  DiffSummary,
   EventBus,
+  Finding,
+  GateOutcome,
+  TaskDraft,
   Kernel,
   KernelDeps,
   KernelSnapshot,
@@ -36,6 +40,7 @@ import {
   moneyFromMicros,
   newAttemptId,
   newRunId,
+  newTaskId,
   ok,
   repeatedLastCategory,
   isOscillating,
@@ -57,6 +62,8 @@ export interface KernelConfig {
   }
   readonly providerId: string
   readonly commitTrailer?: string
+  /** Agente para onde escalar após falhas repetidas (R3). Ex.: `bug-hunter`. */
+  readonly escalationAgent?: string
 }
 
 /**
@@ -71,11 +78,28 @@ export interface Replanner {
   ): Promise<Result<{ created: readonly Task[] }>>
 }
 
+/** Cadeia de qualidade injetada (Fase 5). Sem ela, integra direto após o Verifier. */
+export interface QualityGates {
+  run(
+    task: Task,
+    workspace: Workspace,
+    diff: DiffSummary,
+    signal: AbortSignal,
+  ): Promise<GateOutcome>
+}
+
 export interface UranusKernelOptions {
   readonly deps: KernelDeps
   readonly project: ProjectRef
   readonly config: KernelConfig
   readonly replanner?: Replanner
+  readonly gates?: QualityGates
+  /** Converte findings em tasks de correção. Injetado junto com os gates. */
+  readonly findingsToTasks?: (
+    findings: readonly Finding[],
+    origin: Task,
+    agent: string,
+  ) => readonly TaskDraft[]
 }
 
 /**
@@ -119,6 +143,8 @@ export class UranusKernel implements Kernel {
   private readonly project: ProjectRef
   private readonly config: KernelConfig
   private readonly replanner: Replanner | undefined
+  private readonly gates: QualityGates | undefined
+  private readonly findingsToTasks: UranusKernelOptions['findingsToTasks']
 
   private runId: RunId | undefined
   private state: KernelStatus['state'] = 'idle'
@@ -144,6 +170,8 @@ export class UranusKernel implements Kernel {
     this.project = options.project
     this.config = options.config
     this.replanner = options.replanner
+    this.gates = options.gates
+    this.findingsToTasks = options.findingsToTasks
     this.events = options.deps.events
   }
 
@@ -601,12 +629,29 @@ export class UranusKernel implements Kernel {
       )
 
       if (verification.passed) {
-        // 8 — integrate
+        // 8 — integrate (com a cadeia de qualidade antes do commit)
         this.phase = 'integrate'
         crashPoint('integrate')
         const verified = unwrap(transition(verifying, 'verified', { at: clock.now() }))
         await queue.update(verified)
-        await this.integrate(verified, workspace, attempt, lease)
+
+        const gateOutcome = await this.runQualityGates(verified, workspace)
+        if (gateOutcome?.blocked === true) {
+          // Findings bloqueantes: a task volta a falhar com o diagnóstico dos
+          // gates, e as correções entram na fila como trabalho novo.
+          failureCategory = 'review-blocked'
+          await this.spawnFindingTasks(gateOutcome, verified)
+          await this.handleFailure(
+            verified,
+            workspace,
+            attempt,
+            gateVerification(gateOutcome, verification),
+            lease,
+          )
+        } else {
+          if (gateOutcome !== undefined) await this.spawnFindingTasks(gateOutcome, verified)
+          await this.integrate(verified, workspace, attempt, lease)
+        }
       } else {
         failureCategory = verification.diagnosis?.category
         await this.handleFailure(verifying, workspace, attempt, verification, lease)
@@ -780,6 +825,106 @@ export class UranusKernel implements Kernel {
     await queue.update(running)
 
     return ok({ workspace, attempt, running, contextPack })
+  }
+
+  /**
+   * Escolhe o agente da próxima tentativa quando a política pede escalada.
+   *
+   * Só escala se o agente-alvo estiver registrado — a config decide quais
+   * agentes existem, e o kernel não inventa nenhum.
+   */
+  /** Há um agente especializado registrado e ainda não usado nesta task? */
+  private canEscalate(task: Task): boolean {
+    const target = this.config.escalationAgent
+    if (target === undefined || task.agentHint === target) return false
+    // Basta estar registrado: o `agentHint` ignora o roteamento por `handles`,
+    // que é justamente o que permite escalar uma task de qualquer tipo para o
+    // especialista sem que ele vire a escolha padrão daquele tipo.
+    return this.deps.agents.get(target) !== undefined
+  }
+
+  private escalateAgent(task: Task, action: string, attemptCount: number): Task {
+    if (task.state !== 'ready' || !this.canEscalate(task)) return task
+    if (action !== 'escalate' && attemptCount < 2) return task
+
+    const target = this.config.escalationAgent!
+    this.deps.logger.info('Escalando para agente especializado', {
+      taskId: task.id,
+      from: task.agentHint ?? '(padrão)',
+      to: target,
+      attempts: attemptCount,
+    })
+    return { ...task, agentHint: target }
+  }
+
+  /** Cadeia de qualidade. Sem gates injetados, integra direto após o Verifier. */
+  private async runQualityGates(
+    task: Task,
+    workspace: Workspace,
+  ): Promise<GateOutcome | undefined> {
+    if (this.gates === undefined) return undefined
+
+    const diff = await this.deps.vcs.diff(workspace.rootDir, {
+      base: workspace.baseCommit,
+      includeUntracked: true,
+    })
+    if (!diff.ok) return undefined
+
+    const outcome = await this.gates.run(task, workspace, diff.value, this.abort.signal)
+    this.deps.logger.info('Cadeia de qualidade concluída', {
+      taskId: task.id,
+      gates: outcome.reports.length,
+      blocked: outcome.blocked,
+      findings: outcome.reports.reduce((total, report) => total + report.findings.length, 0),
+    })
+    return outcome
+  }
+
+  /** Findings não-bloqueantes viram trabalho na fila em vez de virarem nada. */
+  private async spawnFindingTasks(outcome: GateOutcome, origin: Task): Promise<void> {
+    if (this.findingsToTasks === undefined) return
+
+    for (const report of outcome.reports) {
+      // Bloqueantes viram tasks também: a correção precisa existir como
+      // trabalho rastreável, não só como motivo de falha.
+      const findings = report.blocked ? report.blockingFindings : []
+      const followUps = outcome.followUps.filter((finding) => report.findings.includes(finding))
+      const drafts = this.findingsToTasks([...findings, ...followUps], origin, report.agent)
+
+      for (const draft of drafts) {
+        const now = this.deps.clock.now()
+        const task: Task = {
+          id: newTaskId(now),
+          projectId: origin.projectId,
+          kind: draft.kind,
+          title: draft.title,
+          intent: draft.intent,
+          state: 'ready',
+          priority: draft.kind === 'security' ? 90 : 70,
+          deps: [],
+          touches: draft.touches,
+          acceptance: draft.acceptance,
+          attempts: 0,
+          maxAttempts: draft.maxAttempts ?? origin.maxAttempts,
+          labels: [...(draft.labels ?? [])],
+          createdAt: now,
+          updatedAt: now,
+        }
+        const queued = await this.deps.queue.enqueue(task)
+        if (queued.ok) {
+          await this.events.emit(
+            'TaskCreated',
+            { taskId: task.id, kind: task.kind, title: task.title },
+            { runId: this.runId!, taskId: task.id },
+          )
+        } else {
+          this.deps.logger.warn('Task de correção rejeitada na admissão', {
+            title: task.title,
+            error: queued.error.message,
+          })
+        }
+      }
+    }
   }
 
   private async integrate(
@@ -956,13 +1101,20 @@ export class UranusKernel implements Kernel {
           retryableCategory: isRetryableCategory(diagnosis.category),
           repeatedCategory: repeatedLastCategory(history) || isOscillating(history),
           suggestedAction: diagnosis.suggestedAction,
+          escalationAvailable: this.canEscalate(failed),
         })
 
     const moved = transition(failed, decision.next, {
       at: now,
       ...(decision.blockReason === undefined ? {} : { blockReason: decision.blockReason }),
     })
-    if (moved.ok) await queue.update(moved.value)
+    if (moved.ok) {
+      // Escalada (R3): a próxima tentativa vai para um agente com método
+      // diferente. Repetir o mesmo agente que já falhou duas vezes com o mesmo
+      // contexto é a definição do loop que a política existe para quebrar.
+      const escalated = this.escalateAgent(moved.value, diagnosis.suggestedAction, history.length)
+      await queue.update(escalated)
+    }
 
     await queue.release(lease, moved.ok ? moved.value.state : 'blocked', now).catch(() => undefined)
 
@@ -1100,6 +1252,36 @@ export class UranusKernel implements Kernel {
     )
     this.state = 'idle'
     this.phase = 'idle'
+  }
+}
+
+/**
+ * Traduz um bloqueio de gate em `Verification` para reusar o caminho de falha.
+ *
+ * A categoria `out-of-scope` faria o replan; aqui a ação certa é `escalate`:
+ * o código passou nos testes mas foi reprovado no julgamento, então repetir o
+ * mesmo agente com o mesmo contexto tende a produzir o mesmo diff.
+ */
+function gateVerification(outcome: GateOutcome, base: Verification): Verification {
+  const blocking = outcome.reports.flatMap((report) => report.blockingFindings)
+  const byAgent = outcome.reports
+    .filter((report) => report.blocked)
+    .map((report) => report.agent)
+    .join(', ')
+
+  return {
+    ...base,
+    passed: false,
+    diagnosis: {
+      category: 'unknown',
+      summary: `Bloqueado por ${byAgent}: ${String(blocking.length)} achado(s) de severidade alta ou crítica`,
+      evidence: blocking.slice(0, 3).map((finding) => ({
+        kind: 'event' as const,
+        ref: finding.file ?? finding.category,
+        excerpt: `[${finding.severity}] ${finding.title}\n${finding.detail}`.slice(0, 1_000),
+      })),
+      suggestedAction: 'escalate',
+    },
   }
 }
 

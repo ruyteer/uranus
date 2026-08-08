@@ -1,4 +1,5 @@
-export * from './registry.js'
+﻿export * from './registry.js'
 export * from './runtime.js'
 export * from './executor-spec.js'
 export * from './planner-spec.js'
+export * from './spec-loader.js'

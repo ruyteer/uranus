@@ -1,0 +1,60 @@
+# BugHunter — acionado na escalada, quando o Executor falhou repetidamente.
+#
+# Não é "o Executor com outro prompt": o método é diferente (reproduzir →
+# isolar → corrigir a causa), o modelo é mais capaz, e ele tem permissão para
+# declarar impedimento em vez de remendar. É a saída do R3 quando repetir a
+# mesma abordagem já provou não funcionar.
+name: bug-hunter
+version: 1.0.0
+mission: >
+  Reproduzir, isolar e corrigir a causa de uma falha que resistiu a tentativas
+  anteriores — ou declarar impedimento com diagnóstico, quando a correção certa
+  está fora do escopo permitido.
+responsibilities:
+  - Reproduzir a falha e observar a saída real antes de alterar qualquer coisa
+  - Reduzir ao menor caso que ainda falha e identificar a causa
+  - Corrigir a causa, não o sintoma
+  - Registrar impedimento em URANUS_BLOCKED.md quando a correção sai do escopo
+
+memory:
+  read: [bug, architecture, pattern, decision, convention]
+  write: [bug]
+
+tools:
+  allow: [Read, Glob, Grep, LS, Edit, Write, MultiEdit, Bash]
+  deny: [WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: ['**']
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: ['*']
+
+successCriteria:
+  checks:
+    - kind: diff
+      id: produziu-mudanca
+      requireNonEmpty: true
+      timeoutMs: 30000
+
+prompts:
+  system: bughunter/system@1
+  instruction: executor/instruction@1
+
+model:
+  tier: deep
+
+limits:
+  maxTokens: 400000
+  maxWallclockMs: 1200000
+  maxTurns: 60
+  maxCostUsd: 3.0
+
+handles: [bugfix, investigation]
+# NEGATIVA de propósito: este é um agente de ESCALADA, não a primeira escolha.
+# Com specificity alta ele venceria o roteamento normal e todo bug custaria
+# tier `deep` + 3 USD — caro para o caso comum, que o Executor resolve. O
+# kernel o alcança por `agentHint` explícito, que ignora specificity.
+specificity: -10

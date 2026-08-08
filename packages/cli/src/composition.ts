@@ -20,21 +20,32 @@ import { GitAdapter, GitHubHost } from '@uranus/vcs'
 import { SqlTaskQueue } from '@uranus/queue'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
 import { ClaudeCodeProvider, DefaultProviderRegistry } from '@uranus/providers'
+import { fileURLToPath } from 'node:url'
 import {
   DefaultAgentRegistry,
   DefaultAgentRuntime,
   EXECUTOR_SPEC,
   PLANNER_SPEC,
+  loadAgentSpecs,
 } from '@uranus/agents'
+
+/** Diretório `catalog/` do pacote `@uranus/agents`, resolvido em runtime. */
+function builtinCatalogDir(): string {
+  const agentsEntry = fileURLToPath(import.meta.resolve('@uranus/agents'))
+  // `.../packages/agents/dist/index.js` → `.../packages/agents/catalog`
+  return join(agentsEntry, '..', '..', 'catalog')
+}
 import {
   DefaultBudgetGuard,
   DefaultPermissionBroker,
   DefaultRecoveryManager,
   FileCheckpointManager,
+  GatePipeline,
   InMemoryHumanGate,
   InMemoryTelemetry,
   PlanningService,
   UranusKernel,
+  findingsToTaskDrafts,
   type KernelConfig,
 } from '@uranus/kernel'
 import { buildScheduler } from '@uranus/scheduler'
@@ -73,9 +84,9 @@ export interface Composition {
 }
 
 /**
- * Composition root â€” o ÃšNICO lugar onde implementaÃ§Ãµes concretas se encontram.
- * O kernel recebe tudo por injeÃ§Ã£o (zero singletons); trocar o provider, o
- * scheduler ou a memÃ³ria Ã© trocar uma linha aqui, nÃ£o tocar no kernel.
+ * Composition root — o ÚNICO lugar onde implementações concretas se encontram.
+ * O kernel recebe tudo por injeção (zero singletons); trocar o provider, o
+ * scheduler ou a memória é trocar uma linha aqui, não tocar no kernel.
  */
 export async function compose(options: CompositionOptions): Promise<Composition> {
   const clock = options.clock ?? systemClock
@@ -110,8 +121,8 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     branchPrefix: options.config.project.vcs.branchPrefix,
   })
 
-  // Verifier + checks builtin. O resolver de runner de testes vem da config:
-  // `providers.entries` nÃ£o â€” Ã© `context`? Runner do MVP: config simples.
+  // Verifier + checks builtin. O comando de teste por runner vem do digest do
+  // projeto (Fase 3); este mapa é o fallback para runners conhecidos.
   const checks = new DefaultCheckRegistry()
   checks.register(commandCheckImpl(shell))
   checks.register(diffCheckImpl(vcs))
@@ -128,8 +139,8 @@ export async function compose(options: CompositionOptions): Promise<Composition>
 
   const queue = new SqlTaskQueue(state)
 
-  // Scheduler completo (Fase 4): pesos vÃªm da config; ajustar prioridade Ã©
-  // editar YAML. Estado das tasks e Ãºltima conclusÃ£o alimentam caminho crÃ­tico
+  // Scheduler completo (Fase 4): pesos vêm da config; ajustar prioridade é
+  // editar YAML. Estado das tasks e última conclusão alimentam caminho crítico
   // e localidade de contexto.
   let lastCompletedTouches: readonly string[] = []
   let taskCache: readonly Awaited<ReturnType<typeof state.tasks.all>>[number][] = []
@@ -160,6 +171,20 @@ export async function compose(options: CompositionOptions): Promise<Composition>
   for (const spec of [EXECUTOR_SPEC, PLANNER_SPEC]) {
     const registered = agents.register(spec)
     if (!registered.ok) throw registered.error
+  }
+  // Catálogo em YAML (ADR-008): trocar a spec de um agente muda o
+  // comportamento sem recompilar. Specs do projeto sobrescrevem as builtin.
+  for (const dir of [builtinCatalogDir(), join(uranusDir, 'agents')]) {
+    const loaded = await loadAgentSpecs(dir, logger)
+    for (const spec of loaded.specs) {
+      const registered = agents.register(spec)
+      if (!registered.ok) {
+        logger.warn('Spec de agente rejeitada', {
+          agent: spec.name,
+          error: registered.error.message,
+        })
+      }
+    }
   }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
 
@@ -225,11 +250,11 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     logger,
   })
 
-  // Contexto real (Fase 3): digest automÃ¡tico com cache por FreshnessKey.
+  // Contexto real (Fase 3): digest automático com cache por FreshnessKey.
   const contextManager = new DefaultContextManager({ shell, clock, logger, events })
   await contextManager.ensureFresh(project, new AbortController().signal)
 
-  // MemÃ³ria real (Fase 3): Markdown + frontmatter em .uranus/memory/.
+  // Memória real (Fase 3): Markdown + frontmatter em .uranus/memory/.
   const memoryStore = new MarkdownMemoryStore({
     dir: join(uranusDir, options.config.memory.dir),
     projectRootDir: rootDir,
@@ -304,6 +329,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     },
     providerId: options.providerOverride?.id ?? options.config.providers.default,
     commitTrailer: options.config.project.vcs.commitTrailer,
+    escalationAgent: options.config.quality.escalationAgent,
   }
 
   const backlog = new FileBacklogStore({
@@ -334,11 +360,36 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     maxPlanningAttempts: 2,
   })
 
+  // Cadeia de qualidade (Fase 5): roda entre a verificação por código e o
+  // commit. Os agentes relatam findings; `applyGatePolicy` decide o bloqueio.
+  const gates = new GatePipeline({
+    project,
+    agents,
+    agentRuntime,
+    providers,
+    context: packer,
+    events,
+    clock,
+    logger,
+    providerId: options.providerOverride?.id ?? options.config.providers.default,
+    contextBudgetTokens: options.config.context.budgetTokens,
+    gates: options.config.quality.gates.map((gate) => ({
+      agent: gate.agent,
+      enabled: gate.enabled,
+    })),
+    policy: {
+      blockAt: options.config.quality.blockAt,
+      followUpAt: options.config.quality.followUpAt,
+      maxFindings: options.config.quality.maxFindings,
+    },
+  })
+
   const kernel = new UranusKernel({
     deps,
     project,
     config: kernelConfig,
     replanner: planning,
+    ...(options.config.quality.enabled ? { gates, findingsToTasks: findingsToTaskDrafts } : {}),
   })
 
   return {

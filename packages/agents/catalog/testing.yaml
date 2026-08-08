@@ -1,0 +1,56 @@
+# Testing — constrói o sinal de verificação (R4).
+#
+# É o agente que destrava o modo restrito: num repositório sem testes, nenhuma
+# feature pode ser aceita porque não há como PROVAR que funciona (INV-2). Este
+# agente cria essa capacidade antes de qualquer outro trabalho.
+name: testing
+version: 1.0.0
+mission: >
+  Estabelecer ou ampliar o sinal de verificação do projeto: runner configurado,
+  comando de teste que falha quando deve falhar, e testes que exercitam os
+  caminhos principais existentes.
+responsibilities:
+  - Configurar o runner de testes idiomático da stack quando não existir
+  - Escrever testes de fumaça sobre o comportamento já existente
+  - Garantir que o comando de teste sai != 0 quando algo quebra
+  - Nunca alterar lógica de produção para fazer um teste passar
+
+memory:
+  read: [stack, convention, pattern, architecture]
+  write: [convention]
+
+tools:
+  allow: [Read, Glob, Grep, LS, Edit, Write, MultiEdit, Bash]
+  deny: [WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: ['**']
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: ['*']
+
+successCriteria:
+  checks:
+    - kind: diff
+      id: produziu-mudanca
+      requireNonEmpty: true
+      timeoutMs: 30000
+
+prompts:
+  system: testing/system@1
+  instruction: executor/instruction@1
+
+model:
+  tier: balanced
+
+limits:
+  maxTokens: 300000
+  maxWallclockMs: 900000
+  maxTurns: 50
+  maxCostUsd: 2.0
+
+handles: [test]
+# Maior que o Executor (0): em tasks de teste, este agente é o preferido.
+specificity: 5

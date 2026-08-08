@@ -136,6 +136,30 @@ export const permissionsConfigSchema = z.object({
   networkAllow: z.array(z.string()).default([]),
 })
 
+const severitySchema = z.enum(['critical', 'high', 'medium', 'low', 'info'])
+
+export const qualityConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /**
+   * Ordem importa: o pipeline curto-circuita no primeiro bloqueio, então o
+   * gate mais barato e mais decisivo vem primeiro.
+   */
+  gates: z
+    .array(z.object({ agent: z.string().min(1), enabled: z.boolean().default(true) }))
+    .default([
+      { agent: 'reviewer', enabled: true },
+      { agent: 'security', enabled: true },
+      { agent: 'qa', enabled: false },
+    ]),
+  /** Severidade mínima que impede a integração. */
+  blockAt: severitySchema.default('high'),
+  /** Findings não-bloqueantes viram tasks a partir desta severidade. */
+  followUpAt: severitySchema.default('medium'),
+  maxFindings: z.number().int().min(1).max(100).default(20),
+  /** Agente para onde escalar após falhas repetidas (R3). */
+  escalationAgent: z.string().default('bug-hunter'),
+})
+
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
   otlpEndpoint: z.string().url().optional(),
@@ -153,6 +177,7 @@ export const uranusConfigSchema = z.object({
   integration: integrationConfigSchema.default({}),
   memory: memoryConfigSchema.default({}),
   permissions: permissionsConfigSchema.default({}),
+  quality: qualityConfigSchema.default({}),
   telemetry: telemetryConfigSchema.default({}),
   plugins: z.array(z.string()).default([]),
 })
@@ -166,4 +191,5 @@ export type SchedulerConfig = z.infer<typeof schedulerConfigSchema>
 export type IntegrationConfig = z.infer<typeof integrationConfigSchema>
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>
 export type PermissionsConfig = z.infer<typeof permissionsConfigSchema>
+export type QualityConfig = z.infer<typeof qualityConfigSchema>
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>

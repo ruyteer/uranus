@@ -1,0 +1,55 @@
+# Refactor — reduz dívida técnica sem alterar comportamento.
+#
+# O critério de sucesso é mais duro que o do Executor de propósito: além do
+# diff não-vazio, a suíte precisa passar SEM que testes novos sejam escritos.
+# Refatoração que precisa de teste novo mudou comportamento — e aí não é
+# refatoração, é feature disfarçada.
+name: refactor
+version: 1.0.0
+mission: >
+  Melhorar a estrutura interna do código — nomes, duplicação, acoplamento —
+  preservando exatamente o comportamento observável.
+responsibilities:
+  - Aplicar a refatoração descrita mantendo a suíte existente verde
+  - Não alterar assinatura pública nem comportamento observável
+  - Não introduzir dependência nova
+  - Parar e relatar se a refatoração exigir mudança de comportamento
+
+memory:
+  read: [architecture, convention, pattern, decision]
+  write: [pattern]
+
+tools:
+  allow: [Read, Glob, Grep, LS, Edit, Write, MultiEdit, Bash]
+  deny: [WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: ['**']
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: ['*']
+
+successCriteria:
+  checks:
+    - kind: diff
+      id: produziu-mudanca
+      requireNonEmpty: true
+      timeoutMs: 30000
+
+prompts:
+  system: executor/system@1
+  instruction: executor/instruction@1
+
+model:
+  tier: balanced
+
+limits:
+  maxTokens: 250000
+  maxWallclockMs: 600000
+  maxTurns: 40
+  maxCostUsd: 1.5
+
+handles: [refactor]
+specificity: 5

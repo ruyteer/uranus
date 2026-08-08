@@ -1,0 +1,60 @@
+# QA — busca o que os testes que passaram não cobrem.
+name: qa
+version: 1.0.0
+mission: >
+  Encontrar comportamento não verificado: casos de borda, estados inválidos,
+  requisitos da especificação sem teste e asserções fracas que passam por acidente.
+responsibilities:
+  - Confrontar a especificação da tarefa com o que os testes de fato provam
+  - Identificar caminhos de erro e limites não exercitados
+  - Sinalizar teste que passa por acidente (mock que esconde o comportamento real)
+  - Nunca modificar arquivos
+
+memory:
+  read: [convention, pattern, bug, architecture]
+  write: [bug]
+
+tools:
+  allow: [Read, Glob, Grep, LS]
+  deny: [Edit, Write, MultiEdit, Bash, WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: []
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: false
+
+outputs:
+  schema: findings
+
+successCriteria:
+  checks:
+    - kind: schema
+      id: findings-validos
+      schema: findings
+      timeoutMs: 10000
+    - kind: diff
+      id: sem-mutacao
+      maxFiles: 0
+      timeoutMs: 30000
+
+prompts:
+  system: qa/system@1
+  instruction: review/instruction@1
+
+model:
+  tier: balanced
+
+limits:
+  maxTokens: 120000
+  maxWallclockMs: 240000
+  maxTurns: 12
+  maxCostUsd: 0.5
+
+handles: [review]
+# Negativa: roda como gate, não como agente principal de tasks de review.
+specificity: -1
+requires:
+  structuredOutput: true

@@ -133,6 +133,15 @@ export function decideAfterFailure(
     readonly retryableCategory: boolean
     readonly repeatedCategory: boolean
     readonly suggestedAction: 'retry' | 'retry-with-context' | 'escalate' | 'replan' | 'block'
+    /**
+     * Existe um agente especializado ainda não tentado para esta task?
+     *
+     * A ordem importa: quando a mesma categoria se repete, escalar vem ANTES de
+     * replanejar. Trocar de agente é mais barato que refazer o plano, e o caso
+     * comum é o plano estar certo com o executor genérico sendo insuficiente.
+     * Só quando a escalada também falha é que o plano vira suspeito.
+     */
+    readonly escalationAvailable?: boolean
   },
 ): RetryDecision {
   if (input.suggestedAction === 'block' || !input.retryableCategory) {
@@ -158,7 +167,12 @@ export function decideAfterFailure(
     }
   }
   // R3: repetir o que já falhou do mesmo jeito é a definição do loop infinito.
-  if (input.repeatedCategory || input.suggestedAction === 'replan') {
+  // A saída, em ordem de custo: escalar → replanejar.
+  const stuck = input.repeatedCategory || input.suggestedAction === 'escalate'
+  if (stuck && input.escalationAvailable === true) {
+    return { next: 'ready', reason: 'Escalando para agente especializado' }
+  }
+  if (stuck || input.suggestedAction === 'replan') {
     return { next: 'draft', reason: 'Mesma categoria de falha repetida — replanejar' }
   }
   return { next: 'ready', reason: 'Nova tentativa com o diagnóstico no contexto' }

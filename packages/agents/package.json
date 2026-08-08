@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "@uranus/agents",
   "version": "0.1.0",
   "description": "Uranus - runtime de agentes declarativos e catalogo.",
@@ -26,7 +26,8 @@
   "dependencies": {
     "@uranus/backlog": "workspace:*",
     "@uranus/core": "workspace:*",
-    "@uranus/prompts": "workspace:*"
+    "@uranus/prompts": "workspace:*",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@uranus/testkit": "workspace:*"

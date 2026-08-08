@@ -1,0 +1,65 @@
+# Reviewer — revisa o diff contra corretude e convenções registradas.
+#
+# Somente-leitura: `fs.write` vazio e `exec: false`. O critério de sucesso
+# verifica que ele NÃO alterou nada (maxFiles: 0) além de produzir findings
+# no formato exigido. Um revisor que edita código deixa de ser revisor.
+name: reviewer
+version: 1.0.0
+mission: >
+  Encontrar no diff o que os testes automatizados não pegam: corretude sutil,
+  regressão não coberta e violação das convenções registradas do projeto.
+responsibilities:
+  - Avaliar o diff contra as convenções em memória, não contra preferência pessoal
+  - Identificar regressões que a suíte existente não cobriria
+  - Relatar achados com severidade e localização; nunca emitir veredito
+  - Nunca modificar arquivos
+
+memory:
+  read: [convention, pattern, decision, bug, architecture]
+  write: []
+
+tools:
+  allow: [Read, Glob, Grep, LS]
+  deny: [Edit, Write, MultiEdit, Bash, WebFetch, WebSearch]
+
+permissions:
+  fs:
+    read: ['**']
+    write: []
+    deny: ['.git/**', '.env', '.env.*', '.uranus/**']
+  network: false
+  exec: false
+
+outputs:
+  schema: findings
+
+successCriteria:
+  checks:
+    # A saída precisa ser findings estruturados — texto livre não é auditável.
+    - kind: schema
+      id: findings-validos
+      schema: findings
+      timeoutMs: 10000
+    # E o agente NÃO pode ter tocado em nada: revisor que edita não é revisor.
+    - kind: diff
+      id: sem-mutacao
+      maxFiles: 0
+      timeoutMs: 30000
+
+prompts:
+  system: reviewer/system@1
+  instruction: review/instruction@1
+
+model:
+  tier: balanced
+
+limits:
+  maxTokens: 150000
+  maxWallclockMs: 300000
+  maxTurns: 15
+  maxCostUsd: 0.75
+
+handles: [review]
+specificity: 0
+requires:
+  structuredOutput: true

@@ -1,6 +1,14 @@
 ﻿import { join } from 'node:path'
-import type { Check, KernelDeps, ProjectRef, Task } from '@uranus/core'
-import { createLogger, newProjectId, newTaskId, nullSink, systemClock, usd } from '@uranus/core'
+import type { Check, GatePolicy, KernelDeps, ProjectRef, Task } from '@uranus/core'
+import {
+  DEFAULT_GATE_POLICY,
+  createLogger,
+  newProjectId,
+  newTaskId,
+  nullSink,
+  systemClock,
+  usd,
+} from '@uranus/core'
 import { InProcessEventBus, JsonlEventStore } from '@uranus/events'
 import { openState, type StateStore } from '@uranus/state'
 import {
@@ -18,11 +26,13 @@ import { GitAdapter } from '@uranus/vcs'
 import { SqlTaskQueue } from '@uranus/queue'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
 import { DefaultProviderRegistry } from '@uranus/providers'
+import { fileURLToPath } from 'node:url'
 import {
   DefaultAgentRegistry,
   DefaultAgentRuntime,
   EXECUTOR_SPEC,
   PLANNER_SPEC,
+  loadAgentSpecs,
 } from '@uranus/agents'
 import { ScriptedProvider, type ScriptedBehavior } from '@uranus/testkit'
 import { DefaultContextPacker, codeSource, digestSource } from '@uranus/context'
@@ -30,6 +40,7 @@ import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
 import { buildScheduler } from '@uranus/scheduler'
 import { FileBacklogStore } from '@uranus/backlog'
 import { UranusKernel } from './kernel.js'
+import { GatePipeline, findingsToTaskDrafts } from './quality/gate-pipeline.js'
 import { PlanningService } from './planning/planning-service.js'
 import { InMemoryTelemetry, StaticContextManager } from './support/stubs.js'
 import { DefaultBudgetGuard } from './guards/budget-guard.js'
@@ -39,10 +50,10 @@ import { FileCheckpointManager } from './checkpoint/manager.js'
 import { DefaultRecoveryManager } from './recovery/manager.js'
 
 /**
- * Montagem completa do kernel para testes de integraÃ§Ã£o e caos.
+ * Montagem completa do kernel para testes de integração e caos.
  *
  * Ã‰ deliberadamente o espelho do composition root da CLI, com duas trocas:
- * `ScriptedProvider` no lugar do Claude Code e integraÃ§Ã£o `branch-only`
+ * `ScriptedProvider` no lugar do Claude Code e integração `branch-only`
  * (sem push/PR â€” o teste valida commit local).
  */
 export interface TestStack {
@@ -64,8 +75,12 @@ export interface TestStackOptions {
   readonly budgetUsd?: number
   readonly maxAttempts?: number
   readonly maxPlanningAttempts?: number
-  /** Liga o replanejamento automÃ¡tico de tasks em `draft` (Fase 4). */
+  /** Liga o replanejamento automático de tasks em `draft` (Fase 4). */
   readonly withReplanner?: boolean
+  /** Agentes da cadeia de qualidade, em ordem (Fase 5). */
+  readonly gates?: readonly string[]
+  readonly gatePolicy?: GatePolicy
+  readonly escalationAgent?: string
 }
 
 export async function makeTestStack(
@@ -116,6 +131,15 @@ export async function makeTestStack(
     const registered = agents.register(spec)
     if (!registered.ok) throw registered.error
   }
+  // Catálogo YAML real — os testes exercitam as specs que rodam em produção.
+  const catalog = await loadAgentSpecs(
+    join(fileURLToPath(import.meta.url), '..', '..', '..', 'agents', 'catalog'),
+    logger,
+  )
+  for (const spec of catalog.specs) {
+    const registered = agents.register(spec)
+    if (!registered.ok) throw registered.error
+  }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
 
   const provider = new ScriptedProvider(behaviors)
@@ -160,8 +184,8 @@ export async function makeTestStack(
   await contextManager.bootstrap(project, new AbortController().signal)
   const telemetry = new InMemoryTelemetry()
 
-  // Packer e memÃ³ria REAIS (Fase 3): o kernel de teste usa a mesma pilha que a
-  // CLI â€” o que o teste de integraÃ§Ã£o exercita Ã© o que roda em produÃ§Ã£o.
+  // Packer e memória REAIS (Fase 3): o kernel de teste usa a mesma pilha que a
+  // CLI â€” o que o teste de integração exercita é o que roda em produção.
   const packer = new DefaultContextPacker({ clock, logger })
   packer.addSource(digestSource(contextManager))
   packer.addSource(codeSource())
@@ -257,8 +281,30 @@ export async function makeTestStack(
       contextBudgetTokens: 20_000,
       integration: { strategy: 'branch-only', draftPullRequests: true, prBase: 'main' },
       providerId: provider.id,
+      ...(options.escalationAgent === undefined
+        ? {}
+        : { escalationAgent: options.escalationAgent }),
     },
     ...(options.withReplanner === true ? { replanner: planning } : {}),
+    ...(options.gates === undefined
+      ? {}
+      : {
+          gates: new GatePipeline({
+            project,
+            agents,
+            agentRuntime,
+            providers,
+            context: packer,
+            events,
+            clock,
+            logger,
+            providerId: provider.id,
+            contextBudgetTokens: 20_000,
+            gates: options.gates.map((agent) => ({ agent, enabled: true })),
+            policy: options.gatePolicy ?? DEFAULT_GATE_POLICY,
+          }),
+          findingsToTasks: findingsToTaskDrafts,
+        }),
   })
 
   events.on('TickStarted', () => {
@@ -285,7 +331,7 @@ export async function makeTestStack(
         projectId: project.id,
         kind: 'feature',
         title: 'Task de teste',
-        intent: 'Implementar a mudanÃ§a de teste.',
+        intent: 'Implementar a mudança de teste.',
         state: 'ready',
         priority: 50,
         deps: [],
