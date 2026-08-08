@@ -3,6 +3,9 @@ import type {
   AgentOutput,
   AgentSpec,
   Attempt,
+  BudgetState,
+  BudgetVerdict,
+  CostEstimate,
   DiffSummary,
   EventBus,
   Finding,
@@ -13,6 +16,7 @@ import type {
   KernelSnapshot,
   KernelStatus,
   Lease,
+  Money,
   ProjectDigest,
   ProjectRef,
   Provider,
@@ -29,10 +33,12 @@ import type {
 import {
   EMPTY_USAGE,
   ZERO_USD,
+  compareMoney,
   decideAfterFailure,
   digestOf,
   err,
   failureHistory,
+  formatMoney,
   isRestrictedMode,
   isRetryableCategory,
   isTerminal,
@@ -515,12 +521,8 @@ export class UranusKernel implements Kernel {
 
     // INV-7: admissão a priori, com estimativa pessimista.
     this.deps.budget.resetTask()
-    const estimatedTokens = this.config.contextBudgetTokens + agent.value.limits.maxTurns * 2_000
-    const verdict = this.deps.budget.admit({
-      cost: agent.value.limits.maxCost,
-      tokens: estimatedTokens,
-      wallclockMs: agent.value.limits.maxWallclockMs,
-    })
+    const estimate = this.estimateFor(agent.value, routed.value)
+    const verdict = this.deps.budget.admit(estimate)
     for (const warning of verdict.warnings) {
       await this.events.emit('BudgetThresholdReached', {
         window: warning.window,
@@ -536,7 +538,7 @@ export class UranusKernel implements Kernel {
       })
       return err(
         new Error(
-          `orçamento insuficiente (${verdict.exceeded?.window ?? '?'}/${verdict.exceeded?.dimension ?? '?'})`,
+          explainBudgetRefusal(verdict, agent.value, estimate, this.deps.budget.state()),
         ) as never,
       )
     }
@@ -853,14 +855,62 @@ export class UranusKernel implements Kernel {
    * Só escala se o agente-alvo estiver registrado — a config decide quais
    * agentes existem, e o kernel não inventa nenhum.
    */
-  /** Há um agente especializado registrado e ainda não usado nesta task? */
+  /** Há um agente especializado registrado, ainda não usado e que cabe no orçamento? */
   private canEscalate(task: Task): boolean {
     const target = this.config.escalationAgent
     if (target === undefined || task.agentHint === target) return false
     // Basta estar registrado: o `agentHint` ignora o roteamento por `handles`,
     // que é justamente o que permite escalar uma task de qualquer tipo para o
     // especialista sem que ele vire a escolha padrão daquele tipo.
-    return this.deps.agents.get(target) !== undefined
+    const spec = this.deps.agents.get(target)
+    if (spec === undefined) return false
+
+    // Escalar para um agente que a admissão vai recusar troca "falhou 3 vezes"
+    // por "orçamento insuficiente" e perde o diagnóstico real. O especialista
+    // costuma ter tetos maiores que o genérico — dinheiro, tempo e tokens — e
+    // basta um deles não caber no limite por task para a escalada virar um beco
+    // sem saída. Verificamos as três dimensões, não só o custo.
+    const provider = this.deps.providers.resolve({
+      agent: spec.name,
+      ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
+      ...(spec.requires === undefined ? {} : { capabilities: spec.requires }),
+    })
+    if (!provider.ok) return false
+
+    const limits = this.deps.budget.state().task.limits
+    const estimate = this.estimateFor(spec, provider.value)
+    const excede =
+      compareMoney(estimate.cost, limits.cost) > 0
+        ? `custo até ${formatMoney(estimate.cost)} > ${formatMoney(limits.cost)}`
+        : estimate.tokens > limits.tokens
+          ? `${String(estimate.tokens)} tokens > ${String(limits.tokens)}`
+          : estimate.wallclockMs > limits.wallclockMs
+            ? `${String(Math.round(estimate.wallclockMs / 1000))}s > ${String(Math.round(limits.wallclockMs / 1000))}s`
+            : undefined
+    if (excede !== undefined) {
+      this.deps.logger.warn('Escalada indisponível: o agente não cabe no orçamento por task', {
+        agente: target,
+        excede,
+        dica: `aumente budget.perTask ou reduza os limits de "${target}"`,
+      })
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Pior caso desta combinação agente + provider, nas três dimensões.
+   *
+   * Um só lugar produz a estimativa, e é o mesmo usado para admitir e para
+   * decidir se vale escalar — divergir entre os dois é como se cria um agente
+   * que o kernel escolhe e em seguida recusa.
+   */
+  private estimateFor(spec: AgentSpec, provider: Provider): CostEstimate {
+    return {
+      cost: worstCaseCost(spec, provider),
+      tokens: this.config.contextBudgetTokens + spec.limits.maxTurns * 2_000,
+      wallclockMs: spec.limits.maxWallclockMs,
+    }
   }
 
   private escalateAgent(task: Task, action: string, attemptCount: number): Task {
@@ -1309,4 +1359,71 @@ function parseTrailer(trailer: string): Record<string, string> {
   const index = trailer.indexOf(':')
   if (index < 0) return {}
   return { [trailer.slice(0, index).trim()]: trailer.slice(index + 1).trim() }
+}
+
+/**
+ * Pior custo possível de uma sessão deste agente neste provider.
+ *
+ * O teto do agente (`limits.maxCost`) sozinho não serve como estimativa: ele é
+ * uma política em dólares que ignora quem vai executar. Com um modelo local o
+ * custo real é zero, e admitir pelo teto do agente recusava tasks por "falta de
+ * orçamento" num provider que não cobra nada — foi exatamente assim que a
+ * escalada para o `bug-hunter` (teto de US$3) morria num limite de US$2 por
+ * task rodando em Ollama.
+ *
+ * A sessão para no primeiro dos dois limites que bater — o de tokens ou o de
+ * dinheiro. O pior caso é, portanto, o **menor** entre eles: continua sendo
+ * pessimista (INV-7), mas pessimista sobre o que pode mesmo acontecer.
+ */
+export function worstCaseCost(agent: AgentSpec, provider: Provider): Money {
+  // Repartição pessimista dos tokens do teto: 80% entrada, 20% saída. Saída
+  // custa mais caro; assumir mais que isso seria pessimismo sem lastro, já que
+  // nenhuma sessão real gera 100% de saída.
+  const ceiling = agent.limits.maxTokens
+  const byTokens = provider.estimateCost(
+    {
+      input: Math.round(ceiling * 0.8),
+      output: Math.round(ceiling * 0.2),
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+    },
+    agent.model?.tier ?? 'balanced',
+  )
+  return compareMoney(byTokens, agent.limits.maxCost) < 0 ? byTokens : agent.limits.maxCost
+}
+
+/**
+ * Mensagem de recusa que diz o que fazer.
+ *
+ * Distingue os dois casos que "orçamento insuficiente" confundia: o limite
+ * acabou de tanto gastar, ou o limite **nunca** coube neste agente. O segundo é
+ * erro de configuração e some sozinho quando o número certo é ajustado — mas só
+ * se a mensagem disser qual número é esse.
+ */
+function explainBudgetRefusal(
+  verdict: BudgetVerdict,
+  agent: AgentSpec,
+  estimate: CostEstimate,
+  state: BudgetState,
+): string {
+  const estimatedCost = estimate.cost
+  const estimatedTokens = estimate.tokens
+  const window = verdict.exceeded?.window ?? 'run'
+  const dimension = verdict.exceeded?.dimension ?? 'cost'
+  const limits = window === 'task' ? state.task.limits : state.run.limits
+  const chave = window === 'task' ? 'budget.perTask' : 'budget.perRun'
+
+  if (dimension === 'cost') {
+    const cabe = compareMoney(estimatedCost, limits.cost) <= 0
+    return cabe
+      ? `orçamento de ${window} esgotado: restam menos de ${formatMoney(estimatedCost)} para o agente "${agent.name}" (limite ${formatMoney(limits.cost)} em ${chave}.usd)`
+      : `o agente "${agent.name}" pode custar até ${formatMoney(estimatedCost)}, acima do limite de ${formatMoney(limits.cost)} por ${window} — aumente ${chave}.usd ou reduza limits.maxCost do agente`
+  }
+  if (dimension === 'tokens') {
+    return estimatedTokens <= limits.tokens
+      ? `orçamento de tokens de ${window} esgotado: o agente "${agent.name}" precisa de ~${String(estimatedTokens)} e restam menos que isso (limite ${String(limits.tokens)} em ${chave}.tokens)`
+      : `o agente "${agent.name}" precisa de ~${String(estimatedTokens)} tokens, acima do limite de ${String(limits.tokens)} por ${window} — aumente ${chave}.tokens ou reduza context.budgetTokens`
+  }
+  return `tempo de ${window} esgotado: o agente "${agent.name}" pode levar até ${String(Math.round(agent.limits.maxWallclockMs / 1000))}s (limite ${chave}.wallclockMs)`
 }

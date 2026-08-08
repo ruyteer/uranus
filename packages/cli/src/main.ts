@@ -45,7 +45,7 @@ program
         '  concurrency: 1',
         'budget:',
         '  perRun: { usd: 10, tokens: 2000000, wallclockMs: 7200000 }',
-        '  perTask: { usd: 2, tokens: 400000, wallclockMs: 900000 }',
+        '  perTask: { usd: 3, tokens: 500000, wallclockMs: 1200000 }',
         'providers:',
         '  default: claude-code',
         'integration:',
@@ -836,6 +836,29 @@ program
           )
           if (!report.healthy) process.exitCode = 1
         }
+      }
+
+      // Agente que não cabe no orçamento por task nunca é admitido — ele existe
+      // no catálogo, aparece em `uranus agent list` e some na hora de trabalhar.
+      // É o tipo de defeito que só aparece na terceira falha de uma task, então
+      // ele é reportado aqui, antes de custar tempo.
+      const limites = composition.deps.budget.state().task.limits
+      const inviaveis = composition.deps.agents.list().filter((spec) => {
+        return (
+          spec.limits.maxCost.micros > limites.cost.micros ||
+          spec.limits.maxWallclockMs > limites.wallclockMs
+        )
+      })
+      if (inviaveis.length > 0) {
+        console.log('\nAgentes que NUNCA serão admitidos com o orçamento atual:')
+        for (const spec of inviaveis) {
+          const motivo =
+            spec.limits.maxCost.micros > limites.cost.micros
+              ? `precisa de até ${formatMoney(spec.limits.maxCost)} (limite ${formatMoney(limites.cost)})`
+              : `precisa de até ${String(Math.round(spec.limits.maxWallclockMs / 1000))}s (limite ${String(Math.round(limites.wallclockMs / 1000))}s)`
+          console.log(`  AVISO ${spec.name.padEnd(14)} ${motivo}`)
+        }
+        console.log('        Aumente budget.perTask ou reduza os limits do agente.')
       }
     } finally {
       await composition.close()

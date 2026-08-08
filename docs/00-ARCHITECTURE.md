@@ -869,7 +869,7 @@ kernel:
 
 budget:
   perRun: { usd: 25, tokens: 5_000_000, wallclockMs: 14_400_000 }
-  perTask: { usd: 2, tokens: 400_000, wallclockMs: 900_000 }
+  perTask: { usd: 3, tokens: 500_000, wallclockMs: 1_200_000 }
   onExhausted: pause # pause | stop | ask
 
 providers:

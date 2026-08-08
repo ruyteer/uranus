@@ -249,10 +249,16 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
   it('orçamento insuficiente bloqueia a task ANTES de gastar (INV-7)', async () => {
     await withTempDir(async (dir) => {
       createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
-      // Orçamento do run (0.5 USD) menor que o custo máximo do agente (2 USD):
-      // a admissão recusa a priori — nenhuma sessão de provider é aberta.
+      // A estimativa de admissão é o PIOR CASO REAL: o menor entre o teto de
+      // dinheiro do agente (US$2) e o que este provider cobraria pelo teto de
+      // tokens dele (US$0,30 com o preço do provider de teste). Usar só o teto
+      // do agente recusaria tasks num provider gratuito — foi assim que a
+      // escalada morria rodando em modelo local.
+      //
+      // Com US$0,10 de orçamento, o pior caso de US$0,30 não cabe e a admissão
+      // recusa a priori: nenhuma sessão de provider é aberta.
       const stack = await makeTestStack(dir, [{ writes: { 'src/a.ts': 'a' } }], {
-        budgetUsd: 0.5,
+        budgetUsd: 0.1,
       })
       try {
         const task = await stack.enqueue({

@@ -102,6 +102,14 @@ export interface AggregatorOptions {
   readonly humanGate?: HumanGate
   /** Chamado a cada mudança. O servidor usa isto para empurrar via SSE. */
   readonly onChange?: (entry: TimelineEntry) => void
+  /**
+   * Providers registrados na composição.
+   *
+   * Sem isto o painel de Saúde só mostrava provider que já tinha falhado — ou
+   * seja, ficava vazio justamente quando estava tudo bem, e o usuário não tinha
+   * como confirmar qual modelo o Uranus ia usar.
+   */
+  readonly providers?: () => readonly { id: string; kind: string }[]
 }
 
 export class TelemetryAggregator {
@@ -534,7 +542,7 @@ export class TelemetryAggregator {
       planning: this.planning,
       approvals: { ...this.approvals, pending: pendingApprovals },
       health: {
-        providers: Object.fromEntries(this.providerHealth),
+        providers: this.providersView(),
         pluginFailures: this.pluginFailures.slice().reverse(),
         spans: this.options.telemetry.spans(60),
       },
@@ -560,6 +568,58 @@ export class TelemetryAggregator {
     emit('uranus_tasks_total', this.tasks.size)
     emit('uranus_ticks_total', this.run.ticks)
     return `${lines.join('\n')}\n`
+  }
+
+  /** Todo provider registrado, com a saúde que se souber dele. */
+  private providersView(): Record<string, ProviderHealthView & { kind?: string }> {
+    const out: Record<string, ProviderHealthView & { kind?: string }> = {}
+    for (const provider of this.options.providers?.() ?? []) {
+      out[provider.id] = { degraded: false, consecutiveFailures: 0, kind: provider.kind }
+    }
+    for (const [id, health] of this.providerHealth) {
+      out[id] = { ...out[id], ...health }
+    }
+    return out
+  }
+
+  /**
+   * Popula o painel com tasks que já existiam antes deste processo subir.
+   *
+   * O agregador deriva tudo de eventos, e eventos de runs anteriores não são
+   * reproduzidos. Sem esta hidratação, uma task criada ontem aparecia com o id
+   * no lugar do título, tipo `unknown` e zero tentativas — o painel contradizia
+   * o `uranus task list`, que é a pior forma de perder a confiança de quem olha.
+   */
+  hydrate(
+    tasks: readonly {
+      id: string
+      title: string
+      kind: string
+      state: TaskState
+      attempts: number
+      updatedAt: number
+      agentHint?: string
+      blockReason?: { message: string }
+    }[],
+  ): void {
+    for (const task of tasks) {
+      const view: TaskView = {
+        id: task.id,
+        title: redactText(task.title),
+        kind: task.kind,
+        state: task.state,
+        attempts: task.attempts,
+        updatedAt: task.updatedAt,
+        costMicros: 0,
+        ...(task.agentHint === undefined ? {} : { agent: task.agentHint }),
+        ...(task.blockReason === undefined
+          ? {}
+          : { blockReason: redactText(task.blockReason.message) }),
+      }
+      // Eventos deste processo são mais recentes que o disco e vencem sempre.
+      const existing = this.tasks.get(task.id)
+      if (existing === undefined) this.tasks.set(task.id, view)
+    }
   }
 
   recentTimeline(limit = 50): readonly TimelineEntry[] {

@@ -330,7 +330,12 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     cost: costAccountant,
     telemetry,
     budget,
+    providers: () => router.list().map((entry) => ({ id: entry.id, kind: entry.kind })),
   })
+  // Tasks que já existiam antes deste processo. O agregador deriva de eventos,
+  // e eventos de runs anteriores não são reproduzidos — sem isto o painel
+  // contradiz o `uranus task list`.
+  aggregator.hydrate(await state.tasks.all())
   const detachCost = attachCostAccounting({ events, cost: costAccountant, telemetry, logger })
   const detachMetrics = attachOperationalMetrics({ events, telemetry })
   aggregator.start()

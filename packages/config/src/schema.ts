@@ -42,7 +42,16 @@ const budgetWindowSchema = z.object({
 
 export const budgetConfigSchema = z.object({
   perRun: budgetWindowSchema.default({ usd: 25, tokens: 5_000_000, wallclockMs: 14_400_000 }),
-  perTask: budgetWindowSchema.default({ usd: 2, tokens: 400_000, wallclockMs: 900_000 }),
+  /**
+   * O limite por task precisa comportar o **maior** agente do catálogo, ou esse
+   * agente nunca é admitido e some do sistema sem aviso. O `bug-hunter` — o
+   * especialista para onde a task escala depois de falhas repetidas (R3) — pede
+   * até US$3, 20 min e 400k tokens. Com o antigo default de US$2/15 min, a
+   * escalada era recusada na admissão e a task morria com "orçamento
+   * insuficiente" em vez do diagnóstico real. `uranus doctor` avisa quando
+   * algum agente registrado não cabe aqui.
+   */
+  perTask: budgetWindowSchema.default({ usd: 3, tokens: 500_000, wallclockMs: 1_200_000 }),
   /** `pause` é o default seguro: nunca continuar gastando após o limite. */
   onExhausted: z.enum(['pause', 'stop', 'ask']).default('pause'),
   warnAtRatio: z.number().min(0).max(1).default(0.8),

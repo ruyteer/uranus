@@ -328,7 +328,7 @@ kernel:
 # INV-7: limite duro, não aviso. Verificado ANTES de gastar.
 budget:
   perRun: { usd: 25, tokens: 5000000, wallclockMs: 14400000 }
-  perTask: { usd: 2, tokens: 400000, wallclockMs: 900000 }
+  perTask: { usd: 3, tokens: 500000, wallclockMs: 1200000 } # comporta o maior agente do catálogo
   onExhausted: pause # pause | stop | ask
 
 providers:
