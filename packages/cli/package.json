@@ -36,6 +36,7 @@
     "@uranus/events": "workspace:*",
     "@uranus/executors": "workspace:*",
     "@uranus/kernel": "workspace:*",
+    "@uranus/plugins": "workspace:*",
     "@uranus/prompts": "workspace:*",
     "@uranus/providers": "workspace:*",
     "@uranus/queue": "workspace:*",

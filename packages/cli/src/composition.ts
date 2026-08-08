@@ -2,6 +2,13 @@ import { join, resolve } from 'node:path'
 import type { Clock, KernelDeps, Logger, ProjectRef, Provider, UranusEvent } from '@uranus/core'
 import { newProjectId, systemClock, createLogger, usd } from '@uranus/core'
 import type { UranusConfig } from '@uranus/config'
+import { createConfigReader, scopedReader } from '@uranus/config'
+import {
+  BUILTIN_PLUGINS,
+  DefaultPluginLoader,
+  PluginRegistry,
+  type ActivationReport,
+} from '@uranus/plugins'
 import { InProcessEventBus, JsonlEventStore } from '@uranus/events'
 import { openState, type StateStore } from '@uranus/state'
 import {
@@ -81,6 +88,11 @@ export interface Composition {
   readonly backlog: FileBacklogStore
   readonly planning: PlanningService
   readonly config: UranusConfig
+  readonly plugins: {
+    readonly loader: DefaultPluginLoader
+    readonly registry: PluginRegistry
+    readonly report: ActivationReport
+  }
   close(): Promise<void>
 }
 
@@ -122,20 +134,48 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     branchPrefix: options.config.project.vcs.branchPrefix,
   })
 
-  // Verifier + checks builtin. O comando de teste por runner vem do digest do
-  // projeto (Fase 3); este mapa é o fallback para runners conhecidos.
+  // Plugins (Fase 6) entram aqui, antes de tudo o que eles estendem: checks,
+  // agentes, prompts, context sources e políticas de scheduler. Ativar depois
+  // significaria registrar capacidades num sistema já montado.
+  const configReader = createConfigReader(options.config)
+  const pluginRegistry = new PluginRegistry(logger)
+  const pluginLoader = new DefaultPluginLoader({
+    project,
+    logger,
+    config: configReader,
+    shell,
+    events,
+    registry: pluginRegistry,
+    builtins: BUILTIN_PLUGINS,
+    enabled: options.config.plugins.enabled,
+    disabled: options.config.plugins.disabled,
+    // Cada plugin enxerga apenas `plugins.settings.<id>.*` como raiz.
+    configFor: (id) => scopedReader(configReader, `plugins.settings.${id}`),
+  })
+  const pluginReport = await pluginLoader.loadAll(new AbortController().signal)
+  const pluginRegistrations = pluginRegistry.snapshot()
+
+  // Verifier + checks builtin.
   const checks = new DefaultCheckRegistry()
   checks.register(commandCheckImpl(shell))
   checks.register(diffCheckImpl(vcs))
   checks.register(artifactCheckImpl())
   checks.register(schemaCheckImpl())
-  const testCommands = new Map<string, string>([
+  // Fallback mínimo de runners. O conhecimento real de stack vem do plugin
+  // `node` (INV-8); este mapa só cobre um projeto sem plugin algum ativo.
+  const fallbackTestCommands = new Map<string, string>([
     ['npm', 'npm test'],
     ['pnpm', 'pnpm test'],
-    ['vitest', 'pnpm vitest run'],
     ['node', 'node --test'],
   ])
-  checks.register(testsCheckImpl(shell, vcs, (runner) => testCommands.get(runner)))
+  checks.register(
+    testsCheckImpl(
+      shell,
+      vcs,
+      (runner) => pluginRegistry.resolveTestCommand(runner) ?? fallbackTestCommands.get(runner),
+    ),
+  )
+  for (const entry of pluginRegistrations.checks) checks.register(entry.value)
   const verifier = new DefaultVerifier({ checks, clock, logger })
 
   const queue = new SqlTaskQueue(state)
@@ -154,6 +194,9 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     taskState: () => taskCache,
     lastCompletedTouches: () => lastCompletedTouches,
   })
+  for (const entry of pluginRegistrations.schedulerPolicies) {
+    scheduler.addPolicy(entry.value.policy, entry.value.weight)
+  }
   events.on('TickStarted', () => {
     void state.tasks.all().then((tasks) => {
       taskCache = tasks
@@ -167,6 +210,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
 
   const prompts = new DefaultPromptRegistry()
   registerBuiltinPrompts(prompts)
+  for (const entry of pluginRegistrations.prompts) prompts.register(entry.value)
 
   const agents = new DefaultAgentRegistry()
   for (const spec of [EXECUTOR_SPEC, PLANNER_SPEC]) {
@@ -185,6 +229,18 @@ export async function compose(options: CompositionOptions): Promise<Composition>
           error: registered.error.message,
         })
       }
+    }
+  }
+  // Agentes de plugin por último: `specificity` maior que 0 os faz vencer o
+  // Executor genérico no roteamento por task.
+  for (const entry of pluginRegistrations.agents) {
+    const registered = agents.register(entry.value)
+    if (!registered.ok) {
+      logger.warn('Spec de agente de plugin rejeitada', {
+        plugin: entry.pluginId,
+        agent: entry.value.name,
+        error: registered.error.message,
+      })
     }
   }
   const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
@@ -287,6 +343,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
   packer.addSource(memorySource(memoryStore))
   packer.addSource(codeSource())
   packer.addSource(readmeSource())
+  for (const entry of pluginRegistrations.contextSources) packer.addSource(entry.value)
 
   const deps: KernelDeps = {
     clock,
@@ -318,13 +375,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     checkpoints,
     recovery,
     telemetry: new InMemoryTelemetry(),
-    plugins: {
-      discover: () => Promise.resolve([]),
-      load: () => Promise.reject(new Error('plugins chegam na Fase 6')),
-      activate: () => Promise.reject(new Error('plugins chegam na Fase 6')),
-      deactivateAll: () => Promise.resolve(),
-      active: () => [],
-    },
+    plugins: pluginLoader,
   }
 
   const kernelConfig: KernelConfig = {
@@ -369,6 +420,7 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     maxTasksPerPlan: 12,
     maxAttemptsPerTask: options.config.kernel.maxAttemptsPerTask,
     maxPlanningAttempts: 2,
+    extraTestRunners: () => pluginRegistry.knownTestRunners(),
   })
 
   // Cadeia de qualidade (Fase 5): roda entre a verificação por código e o
@@ -414,7 +466,9 @@ export async function compose(options: CompositionOptions): Promise<Composition>
     eventStore,
     contextManager,
     memoryStore,
+    plugins: { loader: pluginLoader, registry: pluginRegistry, report: pluginReport },
     async close(): Promise<void> {
+      await pluginLoader.deactivateAll()
       await memoryStore.close()
       await eventStore.close()
       state.close()

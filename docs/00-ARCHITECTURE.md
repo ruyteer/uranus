@@ -603,7 +603,11 @@ plugin/
 ```
 
 Um plugin pode registrar: **agentes**, **regras**, **ferramentas**, **prompts**, **eventos/handlers**,
-**checks de verificação**, **context sources**, **políticas de scheduler**.
+**checks de verificação**, **context sources**, **políticas de scheduler** e **runners de teste**.
+
+O último item fecha o INV-8: `TestsCheck.runner` é um id abstrato (`vitest`, `pytest`), e o comando
+concreto vem de `registerTestRunner`. Enquanto esse mapa vivia na composição, o kernel sabia o que
+é npm.
 
 ### 11.2 Ativação
 
@@ -614,7 +618,15 @@ Um plugin pode registrar: **agentes**, **regras**, **ferramentas**, **prompts**,
 
 Plugins declaram permissões (`fs`, `net`, `exec`, `secrets`). O `PluginContext` é a _única_ superfície;
 não há acesso ao kernel, ao state store ou ao event store bruto. Erro em plugin é contido e reportado,
-nunca derruba o kernel.
+nunca derruba o kernel: o que ele registrou antes de quebrar é desfeito, para não deixar meio-plugin ativo.
+
+Uma varredura estática compara o que o código do plugin importa com o que o manifesto declara, e
+recusa carregar quando divergem. **O alcance disso é limitado e o documento não finge o contrário:**
+plugins JavaScript rodam no mesmo processo que o kernel — `node:vm` é contornável e `worker_threads`
+compartilha rede e filesystem. A varredura pega descuido, atualização que ganhou capacidade nova sem
+avisar e plugin malicioso ingênuo; não pega evasão deliberada (`import(atob(...))`). Isolamento real
+exigiria processo separado com IPC — candidato à Fase 9 se o risco justificar o custo. Até lá,
+instalar um plugin é confiar no autor, exatamente como instalar um pacote npm (R17).
 
 ### 11.4 Catálogo alvo
 

@@ -526,6 +526,167 @@ memory
     })
   })
 
+// ── plugins ─────────────────────────────────────────────────────────────────
+
+const plugin = program.command('plugin').description('Plugins de stack e de ferramenta')
+
+plugin
+  .command('list')
+  .description('Lista plugins descobertos, quais ativaram e por quê')
+  .action(async () => {
+    await withComposition(({ composition }) => {
+      const { report, registry } = composition.plugins
+      if (
+        report.activated.length === 0 &&
+        report.skipped.length === 0 &&
+        report.failed.length === 0
+      ) {
+        console.log('Nenhum plugin descoberto.')
+        return Promise.resolve()
+      }
+
+      if (report.activated.length > 0) {
+        console.log('Ativos:')
+        for (const entry of report.activated) {
+          const summary = Object.entries(registry.summaryOf(entry.id))
+            .filter(([, count]) => count > 0)
+            .map(([kind, count]) => `${String(count)} ${kind}`)
+            .join(', ')
+          console.log(`  ${entry.id.padEnd(12)} ${entry.reason}`)
+          if (summary !== '') console.log(`  ${' '.repeat(12)} registrou: ${summary}`)
+        }
+      }
+      if (report.skipped.length > 0) {
+        console.log('\nInativos:')
+        for (const entry of report.skipped) console.log(`  ${entry.id.padEnd(12)} ${entry.reason}`)
+      }
+      if (report.failed.length > 0) {
+        console.log('\nCom falha:')
+        for (const entry of report.failed) console.log(`  ${entry.id.padEnd(12)} ${entry.error}`)
+        process.exitCode = 1
+      }
+      return Promise.resolve()
+    })
+  })
+
+plugin
+  .command('info <id>')
+  .description('Mostra manifesto, permissões e o que o plugin registrou')
+  .action(async (id: string) => {
+    await withComposition(async ({ composition }) => {
+      const { describePermissions } = await import('@uranus/plugins')
+      const entry = composition.plugins.loader.entryOf(id)
+      if (entry === undefined) {
+        console.error(`Plugin "${id}" não foi descoberto.`)
+        process.exitCode = 1
+        return
+      }
+
+      const { manifest } = entry
+      console.log(`${manifest.name} (${manifest.id}) v${manifest.version}`)
+      console.log(`  ${manifest.description}`)
+      console.log(`  origem: ${entry.origin}${entry.dir === undefined ? '' : ` (${entry.dir})`}`)
+      console.log(`  compatível com uranus ${manifest.uranus}`)
+
+      console.log('\nPermissões que o plugin pede:')
+      for (const line of describePermissions(manifest.permissions)) console.log(`  • ${line}`)
+
+      console.log('\nDeclara fornecer:')
+      for (const [kind, names] of Object.entries(manifest.provides)) {
+        if (Array.isArray(names) && names.length > 0) {
+          console.log(`  ${kind}: ${names.join(', ')}`)
+        }
+      }
+
+      const registered = Object.entries(composition.plugins.registry.summaryOf(id)).filter(
+        ([, count]) => count > 0,
+      )
+      console.log(
+        registered.length === 0
+          ? '\nNão está ativo neste projeto (nada registrado).'
+          : `\nRegistrou de fato: ${registered.map(([k, c]) => `${String(c)} ${k}`).join(', ')}`,
+      )
+
+      if ((manifest.detect ?? []).length > 0) {
+        console.log('\nAtiva automaticamente quando:')
+        for (const rule of manifest.detect ?? []) {
+          console.log(`  • ${describeRule(rule)}`)
+        }
+      }
+    })
+  })
+
+plugin
+  .command('check <dir>')
+  .description('Valida um plugin antes de instalar: manifesto, permissões e capacidades usadas')
+  .action(async (dir: string) => {
+    const { validateManifest, describePermissions, scanCapabilities, formatViolations } =
+      await import('@uranus/plugins')
+    const target = resolve(dir)
+
+    let raw: string
+    try {
+      raw = await readFile(join(target, 'uranus.plugin.json'), 'utf8')
+    } catch {
+      console.error(`Nenhum uranus.plugin.json em ${target}`)
+      process.exitCode = 1
+      return
+    }
+
+    const manifest = validateManifest(JSON.parse(raw), join(target, 'uranus.plugin.json'))
+    if (!manifest.ok) {
+      console.error(manifest.error.message)
+      process.exitCode = 1
+      return
+    }
+
+    console.log(`${manifest.value.name} (${manifest.value.id}) v${manifest.value.version}`)
+    console.log('\nAo instalar, você autoriza este plugin a:')
+    for (const line of describePermissions(manifest.value.permissions)) console.log(`  • ${line}`)
+
+    const scan = await scanCapabilities(target, manifest.value.permissions)
+    if (scan.violations.length > 0) {
+      console.error(`\n${formatViolations(manifest.value.id, scan.violations)}`)
+      console.error(
+        '\nO Uranus recusa carregar este plugin enquanto o manifesto não declarar isso.',
+      )
+      process.exitCode = 1
+      return
+    }
+
+    console.log(
+      `\nVarredura: ${String(scan.filesScanned)} arquivo(s), nenhuma capacidade não declarada.${
+        scan.truncated ? ' (varredura truncada — resultado indicativo)' : ''
+      }`,
+    )
+    console.log(
+      '\nLembre-se: plugins rodam no mesmo processo que o kernel. A varredura pega descuido,\n' +
+        'não evasão deliberada. Instalar um plugin é confiar no autor, como qualquer pacote npm.',
+    )
+  })
+
+function describeRule(rule: {
+  kind: string
+  path?: string
+  pattern?: string
+  manifest?: string
+  name?: string
+  run?: string
+}): string {
+  switch (rule.kind) {
+    case 'file':
+      return `o arquivo "${rule.path ?? ''}" existe`
+    case 'glob':
+      return `algum arquivo casa com "${rule.pattern ?? ''}"`
+    case 'dependency':
+      return `"${rule.name ?? ''}" está em ${rule.manifest ?? ''}`
+    case 'command':
+      return `o comando "${rule.run ?? ''}" retorna sucesso`
+    default:
+      return rule.kind
+  }
+}
+
 // ── start / status / logs ───────────────────────────────────────────────────
 
 program

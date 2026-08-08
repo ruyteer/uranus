@@ -58,6 +58,14 @@ export interface PlanningServiceOptions {
   readonly allowedCommands: readonly string[]
   readonly maxTasksPerPlan: number
   readonly maxAttemptsPerTask: number
+  /**
+   * Runners de teste ensinados por plugins, além do detectado no digest.
+   *
+   * Supplier em vez de lista fixa porque plugins podem ativar depois desta
+   * construção; e sem isto o validador rejeitaria um plano que cita `vitest`
+   * num projeto onde o plugin `node` acabou de registrar exatamente esse runner.
+   */
+  readonly extraTestRunners?: () => readonly string[]
   /** Tentativas de planejamento antes de devolver o item ao humano. */
   readonly maxPlanningAttempts: number
 }
@@ -202,12 +210,21 @@ export class PlanningService {
 
   // ── Interno ───────────────────────────────────────────────────────────────
 
+  /** Runners que um plano pode citar: o do digest mais os de plugins. */
+  private knownRunners(digest: ProjectDigest | undefined): readonly string[] {
+    return [
+      ...new Set([
+        ...(digest?.tests.runner === undefined ? [] : [digest.tests.runner]),
+        ...(this.options.extraTestRunners?.() ?? []),
+      ]),
+    ]
+  }
+
   private validationOptions(digest: ProjectDigest | undefined): PlanValidationOptions {
-    const runners = digest?.tests.runner === undefined ? [] : [digest.tests.runner]
     return {
       allowedPaths: this.options.allowedPaths,
       forbiddenPaths: this.options.forbiddenPaths,
-      knownTestRunners: runners,
+      knownTestRunners: this.knownRunners(digest),
       allowedCommands: this.options.allowedCommands,
       maxTasks: this.options.maxTasksPerPlan,
       restrictedMode: digest !== undefined && isRestrictedMode(digest),
@@ -265,7 +282,8 @@ export class PlanningService {
       title: item.title,
       body: item.body,
       testRunners:
-        digest?.tests.runner ?? 'nenhum runner detectado — só tarefas de teste são aceitas',
+        this.knownRunners(digest).join(', ') ||
+        'nenhum runner detectado — só tarefas de teste são aceitas',
       testCommand: digest?.tests.command ?? '(não detectado)',
       allowedPaths: this.options.allowedPaths.join(', '),
       replanContext: rejections.length === 0 ? '' : this.renderRejections(rejections),

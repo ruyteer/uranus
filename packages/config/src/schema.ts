@@ -182,6 +182,28 @@ export const qualityConfigSchema = z.object({
   escalationAgent: z.string().default('bug-hunter'),
 })
 
+/**
+ * Plugins — duas formas, mesma semântica.
+ *
+ * A forma curta (`plugins: [node, nextjs]`) é a documentada e cobre o caso
+ * comum: "ligue estes, mesmo sem detecção". A forma longa existe para quem
+ * precisa desligar um plugin detectado ou passar ajustes por plugin, e é o que
+ * o `PluginContext` enxerga em `settings.<id>.*`.
+ *
+ * Normalizar aqui — em vez de aceitar as duas formas espalhadas pelo código —
+ * mantém um único formato a jusante.
+ */
+const pluginsObjectSchema = z.object({
+  enabled: z.array(z.string()).default([]),
+  disabled: z.array(z.string()).default([]),
+  settings: z.record(z.string(), z.unknown()).default({}),
+})
+
+export const pluginsConfigSchema = z.preprocess(
+  (raw) => (Array.isArray(raw) ? { enabled: raw } : raw),
+  pluginsObjectSchema,
+)
+
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
   otlpEndpoint: z.string().url().optional(),
@@ -201,7 +223,7 @@ export const uranusConfigSchema = z.object({
   permissions: permissionsConfigSchema.default({}),
   quality: qualityConfigSchema.default({}),
   telemetry: telemetryConfigSchema.default({}),
-  plugins: z.array(z.string()).default([]),
+  plugins: pluginsConfigSchema.default({}),
 })
 
 export type UranusConfig = z.infer<typeof uranusConfigSchema>
@@ -215,3 +237,4 @@ export type MemoryConfig = z.infer<typeof memoryConfigSchema>
 export type PermissionsConfig = z.infer<typeof permissionsConfigSchema>
 export type QualityConfig = z.infer<typeof qualityConfigSchema>
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>
+export type PluginsConfig = z.infer<typeof pluginsConfigSchema>

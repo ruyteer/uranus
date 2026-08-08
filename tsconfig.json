@@ -17,6 +17,7 @@
     { "path": "packages/backlog/tsconfig.build.json" },
     { "path": "packages/scheduler/tsconfig.build.json" },
     { "path": "packages/memory/tsconfig.build.json" },
+    { "path": "packages/plugins/tsconfig.build.json" },
     { "path": "packages/cli/tsconfig.build.json" }
   ]
 }

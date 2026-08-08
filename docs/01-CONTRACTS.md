@@ -1037,9 +1037,11 @@ export interface PluginContext {
   registerTool(tool: Tool): void
   registerCheck(check: CheckImpl): void
   registerContextSource(src: ContextSource): void
-  registerPrompt(id: string, tpl: PromptTemplate): void
+  registerPrompt(tpl: PromptTemplate): void
   registerRule(rule: Rule): void
   registerSchedulerPolicy(p: SchedulerPolicy, weight: number): void
+  /** INV-8: `TestsCheck.runner` é abstrato; o comando concreto é do plugin. */
+  registerTestRunner(runner: string, command: string): void
 
   on<N extends EventName>(name: N | readonly N[], h: EventHandler<N>): Unsubscribe
   intercept<N extends EventName>(

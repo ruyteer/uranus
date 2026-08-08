@@ -72,6 +72,15 @@ export interface PluginContext {
   registerPrompt(template: PromptTemplate): void
   registerRule(rule: Rule): void
   registerSchedulerPolicy(policy: SchedulerPolicy, weight: number): void
+  /**
+   * Ensina ao verificador como rodar a suíte de um ecossistema — INV-8.
+   *
+   * `TestsCheck.runner` é um id abstrato (`vitest`, `pytest`, `phpunit`); o
+   * comando concreto é conhecimento de stack, e stack é assunto de plugin. Sem
+   * isto o kernel precisaria carregar um mapa de linguagens, que é exatamente o
+   * que o INV-8 proíbe.
+   */
+  registerTestRunner(runner: string, command: string): void
 
   on<N extends EventName>(name: N | readonly N[], handler: EventHandler<N>): Unsubscribe
   intercept<N extends EventName>(

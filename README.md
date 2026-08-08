@@ -25,6 +25,7 @@ qualidade → commit → PR, com recuperação exata após interrupção. Roda c
 - [Modelos locais e outros providers](#modelos-locais-e-outros-providers)
 - [Como funciona](#como-funciona)
 - [Agentes](#agentes)
+- [Plugins](#plugins)
 - [Solução de problemas](#solução-de-problemas)
 - [Desenvolvimento do framework](#desenvolvimento-do-framework)
 
@@ -225,6 +226,14 @@ O backlog fica em `.uranus/backlog/*.yaml` — edite à mão se preferir.
 
 A memória fica em `.uranus/memory/<escopo>/*.md` — Markdown legível. **Edite à vontade:** o Uranus
 detecta a edição manual e respeita a sua correção.
+
+### Plugins
+
+| Comando                     | O que faz                                                         |
+| --------------------------- | ----------------------------------------------------------------- |
+| `uranus plugin list`        | Quais plugins ativaram, quais não, e o motivo de cada um.         |
+| `uranus plugin info <id>`   | Manifesto, permissões pedidas e o que o plugin registrou de fato. |
+| `uranus plugin check <dir>` | Audita um plugin **antes** de instalar: permissões e capacidades. |
 
 ---
 
@@ -546,6 +555,152 @@ que bloqueia. Um agente devolvendo "aprovado" seria o modelo decidindo o fluxo; 
 
 ---
 
+## Plugins
+
+O kernel não sabe o que é npm, Next.js ou Docker — e essa é a regra, não um acidente (INV-8).
+Todo conhecimento de stack vive em plugin, e um plugin só liga quando o projeto é daquele tipo.
+
+### O que já vem
+
+| Plugin   | Ativa quando                                | Registra                                                      |
+| -------- | ------------------------------------------- | ------------------------------------------------------------- |
+| `node`   | existe `package.json`                       | runners de teste, `node:typecheck`, `node:lint`, `node:build` |
+| `nextjs` | `next` nas dependências ou `next.config.*`  | agente `nextjs`, `nextjs:build`, contexto de configuração     |
+| `docker` | existe `Dockerfile` ou `docker-compose.yml` | `docker:build`, `docker:compose-config`                       |
+
+O plugin `node` é o que faz o INV-8 valer: ele descobre o gerenciador de pacotes pelo lockfile, o
+runner de testes pelas dependências declaradas e só registra `lint`/`build` se os scripts
+existirem de fato. Registrar um check de lint num projeto sem lint só produziria task reprovada
+por comando inexistente.
+
+O plugin `nextjs` registra um **agente** com `specificity: 5` — maior que o `executor` genérico
+(`0`). Num projeto Next.js, ele passa a ser o escolhido para tasks de feature e bugfix, sem que
+nada no kernel mencione Next.js.
+
+```bash
+uranus plugin list
+```
+
+```
+Ativos:
+  node         arquivo "package.json" existe
+               registrou: 3 checks, 1 contextSources, 4 runners
+  nextjs       dependência "next" em package.json
+               registrou: 1 agentes, 1 checks, 1 contextSources, 1 prompts
+
+Inativos:
+  docker       nenhuma regra de detecção casou com este projeto
+```
+
+Toda ativação carrega o motivo. Quando um check reprovar sua task, `uranus plugin list` responde
+de onde ele veio sem arqueologia.
+
+### Ligando e desligando
+
+Na forma curta, `plugins` é a lista do que deve ligar mesmo sem detecção:
+
+```yaml
+plugins: [node, nextjs]
+```
+
+Na forma longa, você desliga um plugin detectado e passa ajustes por plugin:
+
+```yaml
+plugins:
+  disabled: [docker]
+  settings:
+    node:
+      testCommand: 'make test' # sobrepõe o que o plugin descobriria sozinho
+    nextjs:
+      buildCommand: 'pnpm build'
+```
+
+Cada plugin enxerga apenas o próprio ramo: o `node` lê `testCommand`, nunca `plugins.settings.nextjs`.
+
+### Escrevendo um plugin
+
+Um plugin é um diretório com `uranus.plugin.json` e um módulo ES. Coloque-o em
+`.uranus/plugins/<id>/` ou publique como pacote npm com `uranus-plugin` no nome.
+
+```json
+{
+  "id": "storybook",
+  "name": "Storybook",
+  "version": "1.0.0",
+  "uranus": "^0.1.0",
+  "description": "Check de build do Storybook",
+  "provides": { "checks": ["storybook:build"] },
+  "permissions": { "fs": "read", "net": false, "exec": true },
+  "detect": [{ "kind": "glob", "pattern": "**/*.stories.tsx" }]
+}
+```
+
+```js
+// index.js — lembre de "type": "module" no package.json
+import { definePlugin, commandCheck } from '@uranus/plugins/sdk'
+
+export default definePlugin(manifest, (context) => {
+  context.registerCheck(
+    commandCheck(context, {
+      id: 'storybook:build',
+      run: 'npx --no-install storybook build',
+      timeoutMs: 600_000,
+    }),
+  )
+})
+```
+
+Depois, no contrato de aceite de uma task:
+
+```yaml
+checks:
+  - kind: plugin
+    id: build-storybook
+    check: storybook:build
+    timeoutMs: 600000
+```
+
+O que um plugin pode registrar: agentes, ferramentas, checks, context sources, prompts, regras,
+políticas de scheduler e runners de teste. O que ele **não** alcança: o kernel, o banco de estado
+e o event store bruto. A superfície é fechada de propósito (ADR-010).
+
+Regras de detecção são avaliadas com OU — basta uma casar. Regras do tipo `command` só rodam se o
+plugin declarar `permissions.exec`; detecção não é a porta dos fundos para executar algo.
+
+### Permissões, e o que elas realmente garantem
+
+O manifesto declara `fs`, `net`, `exec` e `secrets`. O padrão é o mais restritivo: um plugin que
+esquece de declarar não ganha nada. Um plugin sem `exec` recebe um shell que recusa toda chamada
+com mensagem explícita.
+
+Antes de instalar, audite:
+
+```bash
+uranus plugin check ./caminho/do/plugin
+```
+
+```
+Telemetria (telemetria-secreta) v0.1.0
+
+Ao instalar, você autoriza este plugin a:
+  • ler arquivos do projeto
+
+Plugin "telemetria-secreta" usa capacidades não declaradas no manifesto:
+  • usa fetch() em index.js, mas não declara "permissions.net"
+```
+
+**Seja honesto sobre o alcance disso:** plugins JavaScript rodam no mesmo processo que o kernel.
+Não existe sandbox real em processo — `node:vm` é contornável e `worker_threads` compartilha rede
+e filesystem. A varredura compara o que o código importa com o que o manifesto declara, o que pega
+descuido, atualização que ganhou capacidade nova sem avisar e plugin malicioso ingênuo. Não pega
+evasão deliberada. **Instalar um plugin é confiar no autor**, exatamente como instalar um pacote npm.
+
+Falha de plugin é contida: manifesto inválido, import quebrado ou exceção na ativação viram linha
+no relatório, e o que o plugin alcançou a registrar é desfeito. O kernel continua com uma
+capacidade a menos, nunca derrubado.
+
+---
+
 ## Solução de problemas
 
 **`uranus doctor` diz que o `claude` falhou**
@@ -617,6 +772,7 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 | `@uranus/prompts`   | Templates versionados com render estrito.                                                                        |
 | `@uranus/providers` | Claude Code headless, `ApiProvider` (OpenAI-compatible e modelos locais), roteamento por papel, circuit breaker. |
 | `@uranus/agents`    | Runtime de agentes e catálogo declarativo.                                                                       |
+| `@uranus/plugins`   | Loader, varredura de capacidades, SDK e plugins `node`/`nextjs`/`docker`.                                        |
 | `@uranus/kernel`    | O ciclo, planejamento, cadeia de qualidade, recuperação.                                                         |
 | `@uranus/cli`       | Interface de terminal e composition root.                                                                        |
 
@@ -627,7 +783,7 @@ O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases d
 
 ### Roadmap
 
-Fases 1–5 e 8 (multi-provider) concluídas. A seguir: plugins (6), telemetria e dashboard web (7),
+Fases 1–6 e 8 (multi-provider) concluídas. A seguir: telemetria e dashboard web (7),
 multi-projeto e hardening 1.0 (9).
 
 ---

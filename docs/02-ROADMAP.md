@@ -175,18 +175,32 @@ demais 20 agentes. Um agente que funciona de verdade vale mais que 21 que declar
 
 ### Escopo
 
-- `@uranus/plugins` — loader, validação de manifesto, ativação por `detect`, isolamento de permissões,
-  contenção de erro, SDK (`create-uranus-plugin`).
-- Plugins first-party: `node`, `github`, `nextjs`, `docker`, `postgres`.
-- Contract test suite pública para plugins.
-- CLI: `plugin install|remove|list|info`.
+- `@uranus/plugins` — loader, validação de manifesto, ativação por `detect`, varredura de capacidades,
+  contenção de erro, SDK (`@uranus/plugins/sdk`).
+- Plugins first-party: `node`, `nextjs`, `docker`.
+- CLI: `plugin list|info|check`.
+
+**Entregue além do escopo original:** `PluginContext.registerTestRunner` — o mapa fixo de
+`runner → comando` que vivia na composição saiu do kernel e virou conhecimento do plugin `node`.
+Era o último ponto onde o kernel sabia o que é npm, e o INV-8 só passa a valer de verdade com ele.
+
+**Fora do escopo entregue:** `github` e `postgres` (o primeiro precisa do `CodeHost` como plugin, e
+hoje ele é injetado direto pela composição; o segundo não tinha caso de uso concreto para justificar
+manutenção). `plugin install|remove` também ficou de fora: instalar hoje é copiar um diretório para
+`.uranus/plugins/` ou instalar um pacote npm, e `plugin check` cobre a parte que importa — mostrar
+as permissões antes de confiar no autor.
 
 ### Definition of Done
 
-- [ ] Anexar um projeto Next.js ativa o plugin automaticamente e registra agente + checks específicos.
-- [ ] Plugin que lança exceção na ativação é isolado e reportado; o kernel continua.
-- [ ] Plugin sem permissão `net` que tenta rede é bloqueado.
-- [ ] Um plugin de terceiros escrito com o SDK, fora do monorepo, funciona sem alterar o core.
+- [x] Anexar um projeto Next.js ativa o plugin automaticamente e registra agente + checks específicos.
+- [x] Plugin que lança exceção na ativação é isolado e reportado; o kernel continua.
+- [x] Plugin sem permissão `net` que tenta rede é bloqueado.
+- [x] Um plugin de terceiros escrito com o SDK, fora do monorepo, funciona sem alterar o core.
+
+**Limite honesto desta fase:** plugins JavaScript rodam no mesmo processo que o kernel. A varredura
+de capacidades pega descuido e plugin malicioso ingênuo; não pega evasão deliberada
+(`import(atob(...))`). Isolamento real exigiria processo separado com IPC — candidato à Fase 9.
+Instalar um plugin é confiar no autor, como instalar um pacote npm.
 
 ---
 

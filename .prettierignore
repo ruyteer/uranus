@@ -1,0 +1,11 @@
+dist/
+coverage/
+node_modules/
+*.tsbuildinfo
+
+# Gerado pelo pnpm. Formatar quebra o formato canônico do lockfile e produz um
+# diff gigante toda vez que alguém roda `pnpm install`.
+pnpm-lock.yaml
+
+# Fixtures: são repositórios-alvo do Uranus, não código do framework.
+examples/

@@ -88,6 +88,27 @@ describe('parseConfig', () => {
     }
   })
 
+  it('aceita a forma curta de plugins e normaliza para a forma longa', () => {
+    // `plugins: [node, nextjs]` é a forma documentada; o resto do código só
+    // precisa lidar com um formato.
+    const curta = parseConfig({ project: { name: 'demo' }, plugins: ['node', 'nextjs'] })
+    expect(curta.ok).toBe(true)
+    if (curta.ok) {
+      expect(curta.value.plugins.enabled).toEqual(['node', 'nextjs'])
+      expect(curta.value.plugins.disabled).toEqual([])
+    }
+
+    const longa = parseConfig({
+      project: { name: 'demo' },
+      plugins: { disabled: ['docker'], settings: { node: { testCommand: 'make test' } } },
+    })
+    expect(longa.ok).toBe(true)
+    if (longa.ok) {
+      expect(longa.value.plugins.disabled).toEqual(['docker'])
+      expect(longa.value.plugins.settings['node']).toEqual({ testCommand: 'make test' })
+    }
+  })
+
   it('rejeita config sem projeto', () => {
     const result = parseConfig({})
     expect(result.ok).toBe(false)

@@ -181,10 +181,11 @@ uranus/
 │   │
 │   ├── plugins/                         # @uranus/plugins                               [F6]
 │   │   └── src/
-│   │       ├── loader.ts  registry.ts  manifest-schema.ts  detect.ts
+│   │       ├── loader.ts  registry.ts  manifest.ts  detect.ts
 │   │       ├── context.ts               # PluginContext — única superfície exposta
-│   │       ├── isolation.ts             # permissões + contenção de erro
-│   │       └── sdk/                     # helpers p/ autores de plugin
+│   │       ├── capability-scan.ts       # capacidade usada vs. declarada
+│   │       ├── sdk.ts                   # helpers p/ autores (@uranus/plugins/sdk)
+│   │       └── builtin/{node,nextjs,docker}.ts
 │   │
 │   ├── telemetry/                       # @uranus/telemetry                             [F7]
 │   │   └── src/{metrics,tracing,cost,pricing-table,exporters/*}.ts
@@ -218,7 +219,7 @@ uranus/
 │           └── components/  hooks/  lib/
 │
 ├── plugins/                             # first-party, versionados à parte
-│   ├── node/  github/  nextjs/  docker/  postgres/                      [F6]
+│   ├── (node/ nextjs/ docker/ vivem em packages/plugins/src/builtin/)   [F6]
 │   ├── nestjs/  react/  vue/  angular/  laravel/  python/  fastapi/
 │   ├── django/  go/  rust/  prisma/  supabase/  neon/  kubernetes/
 │   ├── aws/  cloudflare/  gitlab/  stripe/  mercadopago/  pix/
