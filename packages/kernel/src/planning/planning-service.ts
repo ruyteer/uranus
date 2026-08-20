@@ -39,6 +39,41 @@ import {
 } from '@uranus/backlog'
 import type { StoredBacklogItem } from '@uranus/backlog'
 
+/**
+ * Escrita no backlog de projetos vizinhos, vista pelo planejamento
+ * (categoria ④).
+ *
+ * Porta, e não dependência concreta: o kernel não conhece `FileBacklogStore`,
+ * nem o `.uranus` alheio, nem a config que autorizou a escrita. Mesmo padrão
+ * de `BacklogPort` — a composição liga, o serviço só declara a necessidade.
+ *
+ * Ausente em `PlanningServiceOptions` ⇒ comportamento anterior a esta
+ * categoria, intacto: nenhum vizinho é oferecido ao Planner e qualquer
+ * `crossProject` que ele invente é plano rejeitado.
+ */
+export interface CrossProjectBacklog {
+  /**
+   * Vizinhos onde este projeto pode criar itens (`backlogWrite: true`).
+   * Alimenta o prompt do Planner E a lista de aliases aceitos pelo validador —
+   * a MESMA lista nos dois lados, ou o Planner receberia uma oferta que o
+   * validador recusa.
+   */
+  writableProjects(): readonly { readonly alias: string; readonly description?: string }[]
+  /**
+   * Cria o item no vizinho. A IMPLEMENTAÇÃO é idempotente por `externalRef`
+   * (`created: false` quando o item já existia) e garante que o arquivo
+   * escrito fica dentro da raiz declarada do vizinho.
+   */
+  create(input: {
+    readonly project: string
+    readonly title: string
+    readonly intent: string
+    readonly kind?: string
+    readonly originProjectName: string
+    readonly originItemId: string
+  }): Promise<Result<{ readonly itemId: string; readonly created: boolean }>>
+}
+
 export interface PlanningServiceOptions {
   readonly project: ProjectRef
   readonly agents: AgentRegistry
@@ -75,12 +110,30 @@ export interface PlanningServiceOptions {
    * tentativa rejeitada custou igual.
    */
   readonly budget?: BudgetGuard
+  /**
+   * Backlog de projetos vizinhos. Ausente ⇒ o Planner nem fica sabendo que
+   * existem vizinhos graváveis, e nada é escrito fora deste projeto.
+   */
+  readonly crossProject?: CrossProjectBacklog
 }
 
 export interface PlanningResult {
   readonly planId: PlanId
   readonly created: readonly Task[]
   readonly summary: string
+  /**
+   * Itens criados no backlog de vizinhos. NÃO são tasks deste projeto e nunca
+   * aparecem em `created` — quem os executa é o `uranus start` de lá.
+   */
+  readonly crossProject: readonly CrossProjectOutcome[]
+}
+
+export interface CrossProjectOutcome {
+  readonly project: string
+  readonly itemId: string
+  readonly title: string
+  /** `false` quando o item já existia no vizinho (replanejamento do mesmo item). */
+  readonly created: boolean
 }
 
 /**
@@ -101,6 +154,25 @@ export class PlanningService {
     item: StoredBacklogItem,
     digest: ProjectDigest | undefined,
     signal: AbortSignal,
+  ): Promise<Result<PlanningResult>> {
+    // Item real do backlog: as tasks nascem atreladas a ele (§1).
+    return this.planFor(item, digest, signal, item.id)
+  }
+
+  /**
+   * Núcleo do planejamento, com o vínculo de backlog explícito.
+   *
+   * `backlogItemId` é parâmetro em vez de `item.id` porque o replanejamento
+   * fabrica um item sintético (`replan-<taskId>`) que não existe em store
+   * nenhum — gravar esse id nas tasks criaria um vínculo para um item
+   * inexistente, e o item de verdade (o da task original) perderia as filhas
+   * da contagem e nunca fecharia.
+   */
+  private async planFor(
+    item: StoredBacklogItem,
+    digest: ProjectDigest | undefined,
+    signal: AbortSignal,
+    backlogItemId: string | undefined,
   ): Promise<Result<PlanningResult>> {
     const { logger, events, clock } = this.options
 
@@ -133,7 +205,22 @@ export class PlanningService {
 
       const validated = validatePlan(output.value, validationOptions)
       if (validated.ok) {
-        const created = await this.materialize(item, validated.value, clock.now())
+        // Os vizinhos ANTES da fila local, de propósito: se a escrita no outro
+        // projeto falhar, nada foi enfileirado aqui e o item continua `open`
+        // para uma nova tentativa. O contrário deixaria metade do plano em
+        // produção e a outra metade perdida — e a criação lá é idempotente,
+        // então retentar é seguro.
+        //
+        // A origem é o item REAL (`backlogItemId`), não o sintético do
+        // replanejamento: é ele que mantém o `externalRef` estável, e portanto
+        // é ele que impede o vizinho de ganhar uma cópia por replanejamento.
+        const crossProject = await this.dispatchCrossProject(
+          validated.value,
+          backlogItemId ?? item.id,
+        )
+        if (!crossProject.ok) return err(crossProject.error)
+
+        const created = await this.materialize(item, validated.value, clock.now(), backlogItemId)
         if (!created.ok) return err(created.error)
 
         const planId = newPlanId(clock.now())
@@ -145,9 +232,15 @@ export class PlanningService {
         logger.info('Plano aceito', {
           item: item.id,
           tasks: created.value.length,
+          crossProject: crossProject.value.length,
           attempt,
         })
-        return ok({ planId, created: created.value, summary: validated.value.summary })
+        return ok({
+          planId,
+          created: created.value,
+          summary: validated.value.summary,
+          crossProject: crossProject.value,
+        })
       }
 
       rejections = validated.error
@@ -199,7 +292,9 @@ export class PlanningService {
       state: 'open',
     }
 
-    const result = await this.planItem(asItem, digest, signal)
+    // As tasks novas substituem a original — e herdam o item de backlog dela,
+    // se houver. Uma decomposição não muda de dono.
+    const result = await this.planFor(asItem, digest, signal, task.backlogItemId)
     if (result.ok) {
       // A task original sai de cena: foi substituída pelas novas. Via
       // `transition` para que a mudança passe pela mesma validação de sempre.
@@ -227,6 +322,11 @@ export class PlanningService {
     ]
   }
 
+  /** Vizinhos graváveis. Sem porta injetada, a lista é vazia — nunca `undefined`. */
+  private writableProjects(): readonly { readonly alias: string; readonly description?: string }[] {
+    return this.options.crossProject?.writableProjects() ?? []
+  }
+
   private validationOptions(digest: ProjectDigest | undefined): PlanValidationOptions {
     return {
       allowedPaths: this.options.allowedPaths,
@@ -235,7 +335,88 @@ export class PlanningService {
       allowedCommands: this.options.allowedCommands,
       maxTasks: this.options.maxTasksPerPlan,
       restrictedMode: digest !== undefined && isRestrictedMode(digest),
+      // A mesma lista que foi oferecida ao Planner no prompt. Ler os aliases
+      // de outra fonte abriria a porta para o validador aceitar um vizinho que
+      // o prompt não ofereceu, ou recusar um que ofereceu.
+      writableProjects: this.writableProjects().map((neighbor) => neighbor.alias),
     }
+  }
+
+  /**
+   * Leva ao vizinho o que o plano declarou para ele.
+   *
+   * Nenhum destes vira task na fila deste projeto — o trabalho é do outro
+   * lado, e quem decompõe é o Planner de lá quando o `uranus start` dele
+   * rodar. Uma falha aqui aborta o plano inteiro: "planejei" com metade do
+   * trabalho no vazio é pior do que não ter planejado.
+   */
+  private async dispatchCrossProject(
+    plan: ValidatedPlan,
+    originItemId: string,
+  ): Promise<Result<readonly CrossProjectOutcome[]>> {
+    if (plan.crossProject.length === 0) return ok([])
+
+    const port = this.options.crossProject
+    if (port === undefined) {
+      // Inalcançável: sem porta, `writableProjects` é vazio e o validador já
+      // rejeitou. Guarda contra regressão, no espírito de `toDraft`.
+      return err(
+        new ValidationError(
+          'O plano declarou trabalho em projetos vizinhos, mas não há backlog cross-project configurado.',
+        ),
+      )
+    }
+
+    const outcomes: CrossProjectOutcome[] = []
+    for (const wanted of plan.crossProject) {
+      const created = await port.create({
+        project: wanted.project,
+        title: wanted.title,
+        intent: wanted.intent,
+        ...(wanted.kind === undefined ? {} : { kind: wanted.kind }),
+        originProjectName: this.options.project.name,
+        originItemId,
+      })
+      if (!created.ok) return err(created.error)
+
+      outcomes.push({
+        project: wanted.project,
+        itemId: created.value.itemId,
+        title: wanted.title,
+        created: created.value.created,
+      })
+      // Só o que de fato nasceu vira fato no log: reemitir a cada
+      // replanejamento faria o log contar N criações de um item que existe uma
+      // vez só.
+      if (created.value.created) {
+        await this.options.events.emit('CrossProjectItemCreated', {
+          project: wanted.project,
+          itemId: created.value.itemId,
+          originItemId,
+          title: wanted.title,
+        })
+      }
+    }
+    return ok(outcomes)
+  }
+
+  /** Bloco de vizinhos para o prompt. Vazio quando não há nenhum gravável. */
+  private renderCrossProjects(): string {
+    const neighbors = this.writableProjects()
+    if (neighbors.length === 0) return ''
+
+    const projects = neighbors
+      .map(
+        (neighbor) =>
+          `- \`${neighbor.alias}\`${neighbor.description === undefined ? '' : ` — ${neighbor.description}`}`,
+      )
+      .join('\n')
+    const rendered = this.options.prompts?.render('planner/cross-project@1', { projects })
+    if (rendered?.ok === true) return rendered.value
+    // Sem registry injetado, a lista crua ainda é melhor que silêncio: o campo
+    // existe no schema de qualquer jeito, e sem os aliases o Planner só
+    // conseguiria chutar nomes que o validador recusa.
+    return `## Projetos vizinhos onde você PODE criar trabalho (campo "crossProject")\n\n${projects}`
   }
 
   private async runPlanner(
@@ -264,6 +445,7 @@ export class PlanningService {
       acceptance: spec.successCriteria,
       attempts: attemptNumber,
       maxAttempts: this.options.maxPlanningAttempts,
+      repairAttempts: 0,
       labels: [...item.labels],
       createdAt: now,
       updatedAt: now,
@@ -293,6 +475,7 @@ export class PlanningService {
         'nenhum runner detectado — só tarefas de teste são aceitas',
       testCommand: digest?.tests.command ?? '(não detectado)',
       allowedPaths: this.options.allowedPaths.join(', '),
+      crossProjects: this.renderCrossProjects(),
       replanContext: rejections.length === 0 ? '' : this.renderRejections(rejections),
     }
 
@@ -363,6 +546,7 @@ export class PlanningService {
     item: StoredBacklogItem,
     plan: ValidatedPlan,
     now: number,
+    backlogItemId: string | undefined,
   ): Promise<Result<readonly Task[]>> {
     const planId = newPlanId(now)
     const idByRef = new Map<string, TaskId>()
@@ -384,6 +568,10 @@ export class PlanningService {
         id,
         projectId: this.options.project.id,
         planId,
+        // Link reverso direto para o item (§1). Descobrir "de que item veio
+        // esta task" pelo `planId` exigiria varrer o backlog inteiro, e um
+        // replanejamento troca o `planId` — o id do item é o estável.
+        ...(backlogItemId === undefined ? {} : { backlogItemId }),
         kind: draft.kind,
         title: draft.title,
         intent: draft.intent,
@@ -394,6 +582,7 @@ export class PlanningService {
         acceptance: draft.acceptance,
         attempts: 0,
         maxAttempts: draft.maxAttempts ?? this.options.maxAttemptsPerTask,
+        repairAttempts: 0,
         labels: [...(draft.labels ?? []), ...item.labels],
         createdAt: now,
         updatedAt: now,

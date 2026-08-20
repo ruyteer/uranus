@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { unwrap } from '@uranus/core'
+import type { EventPayloads } from '@uranus/core'
+import { newProjectId, silentLogger, unwrap } from '@uranus/core'
 import type { PlannerOutput } from '@uranus/backlog'
+import { FileBacklogStore, createCrossProjectItem, crossProjectBacklogDir } from '@uranus/backlog'
 import { createGitRepo, gitIn, withTempDir } from '@uranus/testkit'
 import { makeTestStack } from './test-stack.js'
+import type { CrossProjectBacklog } from './planning/planning-service.js'
 
 const NEVER = new AbortController().signal
 
@@ -83,6 +86,219 @@ const PLANO_RUIM: PlannerOutput = {
   ],
 }
 
+/** O mesmo plano bom, mais uma necessidade que pertence ao projeto vizinho. */
+const PEDIDO_NO_VIZINHO = {
+  project: 'api',
+  title: 'Expor GET /health com status das dependências',
+  intent:
+    'O painel do front precisa de um endpoint que responda 200 com o status do banco e da fila.',
+}
+
+const PLANO_COM_VIZINHO: PlannerOutput = { ...PLANO_BOM, crossProject: [PEDIDO_NO_VIZINHO] }
+
+/**
+ * Porta cross-project montada como a composição vai montá-la: uma
+ * `FileBacklogStore` apontada para o `.uranus/backlog` do vizinho, com a
+ * guarda de caminho e a idempotência vindas de `@uranus/backlog`.
+ *
+ * Fake só no que é fiação (ler a config); o que importa provar — o item nasce
+ * lá, uma vez só — acontece em disco de verdade.
+ */
+function portaDoVizinho(
+  vizinhos: readonly { alias: string; description?: string; root: string }[],
+): CrossProjectBacklog {
+  const stores = new Map<string, FileBacklogStore>()
+  for (const vizinho of vizinhos) {
+    stores.set(
+      vizinho.alias,
+      new FileBacklogStore({
+        dir: unwrap(crossProjectBacklogDir(vizinho.root)),
+        projectId: newProjectId(1),
+        logger: silentLogger,
+      }),
+    )
+  }
+  return {
+    writableProjects: () =>
+      vizinhos.map((vizinho) => ({
+        alias: vizinho.alias,
+        ...(vizinho.description === undefined ? {} : { description: vizinho.description }),
+      })),
+    create: async (input) => {
+      const store = stores.get(input.project)
+      if (store === undefined) throw new Error(`vizinho inesperado: ${input.project}`)
+      return createCrossProjectItem(store, input, Date.now())
+    },
+  }
+}
+
+describe('PlanningService — trabalho no backlog do vizinho (categoria ④)', () => {
+  it('crossProject vira item NO VIZINHO, e nenhuma task extra na fila daqui', async () => {
+    await withTempDir(async (dir) => {
+      await withTempDir(async (vizinhoDir) => {
+        repoComTestes(dir)
+        const stack = await makeTestStack(dir, [{ text: JSON.stringify(PLANO_COM_VIZINHO) }], {
+          crossProject: portaDoVizinho([
+            { alias: 'api', description: 'API REST em Fastify.', root: vizinhoDir },
+          ]),
+        })
+        try {
+          const item = unwrap(
+            await stack.backlog.add({
+              title: 'Painel de saúde no front',
+              body: 'Quero ver o status das dependências no painel.',
+              createdAt: Date.now(),
+            }),
+          )
+          const result = unwrap(await stack.planning.planItem(item, undefined, NEVER))
+
+          // O pedido do vizinho NÃO virou task daqui — é o ponto do pedido.
+          expect(result.created).toHaveLength(1)
+          expect(await stack.state.tasks.all()).toHaveLength(1)
+          expect(result.created[0]!.title).toBe('Adicionar função de subtração')
+
+          // …e nasceu lá, com a origem escrita no corpo.
+          const doVizinho = new FileBacklogStore({
+            dir: unwrap(crossProjectBacklogDir(vizinhoDir)),
+            projectId: newProjectId(1),
+            logger: silentLogger,
+          })
+          const criados = await doVizinho.list()
+          expect(criados).toHaveLength(1)
+          expect(criados[0]!.title).toBe(PEDIDO_NO_VIZINHO.title)
+          expect(criados[0]!.source).toBe('linked-project')
+          expect(criados[0]!.body).toContain(stack.project.name)
+          expect(criados[0]!.body).toContain(item.id)
+
+          expect(result.crossProject).toEqual([
+            {
+              project: 'api',
+              itemId: criados[0]!.id,
+              title: PEDIDO_NO_VIZINHO.title,
+              created: true,
+            },
+          ])
+
+          const eventos: string[] = []
+          for await (const event of stack.eventStore.read(1)) eventos.push(event.name)
+          expect(eventos).toContain('CrossProjectItemCreated')
+        } finally {
+          await stack.close()
+        }
+      })
+    })
+  }, 60_000)
+
+  it('planejar o mesmo item duas vezes cria UM item no vizinho', async () => {
+    await withTempDir(async (dir) => {
+      await withTempDir(async (vizinhoDir) => {
+        repoComTestes(dir)
+        const stack = await makeTestStack(
+          dir,
+          [
+            { text: JSON.stringify(PLANO_COM_VIZINHO) },
+            { text: JSON.stringify(PLANO_COM_VIZINHO) },
+          ],
+          { crossProject: portaDoVizinho([{ alias: 'api', root: vizinhoDir }]) },
+        )
+        try {
+          const item = unwrap(
+            await stack.backlog.add({ title: 'Painel de saúde', body: 'x', createdAt: Date.now() }),
+          )
+          unwrap(await stack.planning.planItem(item, undefined, NEVER))
+          const segundo = unwrap(await stack.planning.planItem(item, undefined, NEVER))
+
+          const doVizinho = new FileBacklogStore({
+            dir: unwrap(crossProjectBacklogDir(vizinhoDir)),
+            projectId: newProjectId(1),
+            logger: silentLogger,
+          })
+          expect(await doVizinho.list()).toHaveLength(1)
+          // A segunda passagem reencontrou o item; nada de "criado" no log.
+          expect(segundo.crossProject[0]!.created).toBe(false)
+
+          const criados = []
+          for await (const event of stack.eventStore.read(1)) {
+            if (event.name === 'CrossProjectItemCreated') criados.push(event)
+          }
+          expect(criados).toHaveLength(1)
+        } finally {
+          await stack.close()
+        }
+      })
+    })
+  }, 60_000)
+
+  it('alias desconhecido REJEITA o plano — não escreve em lugar nenhum', async () => {
+    await withTempDir(async (dir) => {
+      await withTempDir(async (vizinhoDir) => {
+        repoComTestes(dir)
+        const plano: PlannerOutput = {
+          ...PLANO_BOM,
+          crossProject: [{ ...PEDIDO_NO_VIZINHO, project: 'mobile' }],
+        }
+        const stack = await makeTestStack(
+          dir,
+          [{ text: JSON.stringify(plano) }, { text: JSON.stringify(plano) }],
+          { crossProject: portaDoVizinho([{ alias: 'api', root: vizinhoDir }]) },
+        )
+        try {
+          const item = unwrap(
+            await stack.backlog.add({ title: 'Painel', body: 'x', createdAt: Date.now() }),
+          )
+          const result = await stack.planning.planItem(item, undefined, NEVER)
+          expect(result.ok).toBe(false)
+
+          // Nem task aqui, nem item lá: a rejeição é total.
+          expect(await stack.state.tasks.all()).toHaveLength(0)
+          const doVizinho = new FileBacklogStore({
+            dir: unwrap(crossProjectBacklogDir(vizinhoDir)),
+            projectId: newProjectId(1),
+            logger: silentLogger,
+          })
+          expect(await doVizinho.list()).toHaveLength(0)
+
+          const codigos: string[] = []
+          for await (const event of stack.eventStore.read(1)) {
+            if (event.name !== 'PlanRejected') continue
+            const payload = event.payload as EventPayloads['PlanRejected']
+            codigos.push(...payload.rejections.map((rejection) => rejection.code))
+          }
+          expect(codigos).toContain('unknown-cross-project')
+        } finally {
+          await stack.close()
+        }
+      })
+    })
+  }, 60_000)
+
+  it('o prompt lista os vizinhos graváveis, com alias e descrição', async () => {
+    await withTempDir(async (dir) => {
+      await withTempDir(async (vizinhoDir) => {
+        repoComTestes(dir)
+        const stack = await makeTestStack(dir, [{ text: JSON.stringify(PLANO_BOM) }], {
+          crossProject: portaDoVizinho([
+            { alias: 'api', description: 'API REST em Fastify.', root: vizinhoDir },
+          ]),
+        })
+        try {
+          const item = unwrap(
+            await stack.backlog.add({ title: 'Painel', body: 'x', createdAt: Date.now() }),
+          )
+          unwrap(await stack.planning.planItem(item, undefined, NEVER))
+
+          const instrucao = stack.provider.sessions[0]!.instruction
+          expect(instrucao).toContain('crossProject')
+          expect(instrucao).toContain('`api`')
+          expect(instrucao).toContain('API REST em Fastify.')
+        } finally {
+          await stack.close()
+        }
+      })
+    })
+  }, 60_000)
+})
+
 describe('PlanningService — item de backlog vira tasks (DoD Fase 4)', () => {
   it('um item em prosa vira tasks válidas na fila', async () => {
     await withTempDir(async (dir) => {
@@ -155,7 +371,11 @@ describe('PlanningService — item de backlog vira tasks (DoD Fase 4)', () => {
         const rejected: string[] = []
         for await (const event of stack.eventStore.read(1)) {
           if (event.name === 'PlanRejected') {
-            const payload = event.payload as { rejections: { code: string; message: string }[] }
+            // `UranusEvent` sem parâmetro é a UNIÃO de todos os payloads, e
+            // `event.name` não a estreita. Estreitar para o membro certo da
+            // própria união é o cast que o compilador aceita — um tipo
+            // estrutural inventado à parte não sobrepõe a união inteira.
+            const payload = event.payload as EventPayloads['PlanRejected']
             rejected.push(...payload.rejections.map((r) => r.code))
           }
         }
@@ -322,6 +542,31 @@ describe('PlanningService — item de backlog vira tasks (DoD Fase 4)', () => {
       }
     })
   }, 90_000)
+
+  it('sem porta cross-project, o Planner nem fica sabendo que o campo existe', async () => {
+    await withTempDir(async (dir) => {
+      repoComTestes(dir)
+      const stack = await makeTestStack(dir, [
+        { text: JSON.stringify(PLANO_COM_VIZINHO) },
+        { text: JSON.stringify(PLANO_COM_VIZINHO) },
+      ])
+      try {
+        const item = unwrap(
+          await stack.backlog.add({ title: 'Painel de saúde', body: 'x', createdAt: Date.now() }),
+        )
+        const result = await stack.planning.planItem(item, undefined, NEVER)
+
+        // O bloco de vizinhos não foi oferecido…
+        expect(stack.provider.sessions[0]!.instruction).not.toContain('crossProject')
+        // …e um plano que usa o campo mesmo assim é recusado, não aceito pela
+        // metade: sem vizinho gravável não há para onde mandar o pedido.
+        expect(result.ok).toBe(false)
+        expect(await stack.state.tasks.all()).toHaveLength(0)
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 60_000)
 
   it('sem replanejador configurado, draft vira blocked com motivo — nunca limbo', async () => {
     await withTempDir(async (dir) => {

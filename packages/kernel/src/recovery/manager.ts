@@ -70,10 +70,15 @@ export class DefaultRecoveryManager implements RecoveryManager {
       leasesExpired.push(lease.taskId)
     }
 
-    // 3) Tasks ativas voltam à fila.
+    // 3) Tasks ativas voltam à fila. `failed` entra aqui também: é um estado de
+    // trânsito de um instante só entre "marcar a falha" e "decidir o próximo
+    // passo" (`handleFailure`, kernel.ts) — se o processo morre nesse meio,
+    // a task fica presa em `failed` pra sempre. `failed` não é `isActive`
+    // (não seguraria lease nem slot), mas precisa do mesmo tratamento de
+    // interrupção, senão nunca mais volta pra fila e a fila nunca "drena".
     const tasksReset: TaskId[] = []
     for (const task of await state.tasks.all()) {
-      if (!isActive(task.state)) continue
+      if (!isActive(task.state) && task.state !== 'failed') continue
       const target = stateAfterInterruption(task.state)
       if (target === task.state) continue
       const moved = transition(task, target, { at: now })

@@ -7,6 +7,7 @@ import type {
   Provider,
   ProviderRegistry,
   Task,
+  ValidationPolicyInput,
 } from '@uranus/core'
 import {
   DEFAULT_GATE_POLICY,
@@ -18,7 +19,7 @@ import {
   usd,
 } from '@uranus/core'
 import { InProcessEventBus, JsonlEventStore } from '@uranus/events'
-import { openState, type StateStore } from '@uranus/state'
+import { openState, selectAllTasksSync, type StateStore } from '@uranus/state'
 import {
   DefaultCheckRegistry,
   DefaultShellRunner,
@@ -40,6 +41,7 @@ import {
   DefaultAgentRuntime,
   EXECUTOR_SPEC,
   PLANNER_SPEC,
+  createSessionLimiter,
   loadAgentSpecs,
 } from '@uranus/agents'
 import { ScriptedProvider, type ScriptedBehavior } from '@uranus/testkit'
@@ -47,9 +49,9 @@ import { DefaultContextPacker, codeSource, digestSource } from '@uranus/context'
 import { DefaultMemoryManager, MarkdownMemoryStore } from '@uranus/memory'
 import { buildScheduler } from '@uranus/scheduler'
 import { FileBacklogStore } from '@uranus/backlog'
-import { UranusKernel } from './kernel.js'
+import { UranusKernel, type BacklogPort, type UranusKernelOptions } from './kernel.js'
 import { GatePipeline, findingsToTaskDrafts } from './quality/gate-pipeline.js'
-import { PlanningService } from './planning/planning-service.js'
+import { PlanningService, type CrossProjectBacklog } from './planning/planning-service.js'
 import { InMemoryTelemetry, StaticContextManager } from './support/stubs.js'
 import { DefaultBudgetGuard } from './guards/budget-guard.js'
 import { DefaultPermissionBroker } from './guards/permission-broker.js'
@@ -88,11 +90,38 @@ export interface TestStackOptions {
   /** Agentes da cadeia de qualidade, em ordem (Fase 5). */
   readonly gates?: readonly string[]
   readonly gatePolicy?: GatePolicy
+  /** Recebe os achados que a política recusou como task (`planFollowUps`). */
+  readonly onDeferredFinding?: UranusKernelOptions['deferFinding']
   readonly escalationAgent?: string
   /** Usa um provider real (ex.: `ApiProvider`) no lugar do roteirizado (Fase 8). */
   readonly providerOverride?: Provider
   /** Registry/roteador próprio, para testar roteamento por papel. */
   readonly providerRegistry?: ProviderRegistry
+  /** Quantas tasks o kernel executa em paralelo (Fase 9). Default 1. */
+  readonly concurrency?: number
+  /** Sobrescreve a estratégia de integração (default: `branch-only`, sem push/PR). */
+  readonly integration?: Partial<{
+    strategy: 'pull-request' | 'branch-only' | 'direct'
+    draftPullRequests: boolean
+    pushRemote: string
+    prBase: string
+  }>
+  /** Host de PR fake, só usado quando `integration.strategy` é `'pull-request'`. */
+  readonly codeHost?: KernelDeps['codeHost']
+  /** Política de validação do projeto. Ausente ⇒ `DEFAULT_VALIDATION_POLICY`. */
+  readonly validations?: ValidationPolicyInput
+  /**
+   * Backlog visto pelo kernel (categoria ②). Ausente ⇒ o backlog não é tocado.
+   * Nos testes entra um fake; a implementação real vive na composição da CLI.
+   */
+  readonly backlogPort?: BacklogPort
+  /** `config.backlog.autoPlan`. Só tem efeito com `backlogPort` injetada. */
+  readonly autoPlanBacklog?: boolean
+  /**
+   * Backlog de projetos vizinhos (categoria ④). Ausente ⇒ nenhum vizinho é
+   * oferecido ao Planner e nada é escrito fora deste projeto.
+   */
+  readonly crossProject?: CrossProjectBacklog
 }
 
 export async function makeTestStack(
@@ -127,12 +156,11 @@ export async function makeTestStack(
   const verifier = new DefaultVerifier({ checks, clock, logger })
 
   const queue = new SqlTaskQueue(state)
-  let taskCache: readonly Task[] = []
   const scheduler = buildScheduler({
     queue,
     logger,
     failureCooldownMs: 0, // sem cooldown em teste
-    taskState: () => taskCache,
+    taskState: () => selectAllTasksSync(state.db),
     lastCompletedTouches: () => [],
   })
 
@@ -152,7 +180,8 @@ export async function makeTestStack(
     const registered = agents.register(spec)
     if (!registered.ok) throw registered.error
   }
-  const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger })
+  const sessions = createSessionLimiter()
+  const agentRuntime = new DefaultAgentRuntime({ prompts, registry: agents, logger, sessions })
 
   const scripted = new ScriptedProvider(behaviors)
   const provider = options.providerOverride ?? scripted
@@ -251,6 +280,7 @@ export async function makeTestStack(
     checkpoints,
     recovery,
     telemetry,
+    ...(options.codeHost === undefined ? {} : { codeHost: options.codeHost }),
     plugins: {
       discover: () => Promise.resolve([]),
       load: () => Promise.reject(new Error('n/a')),
@@ -286,6 +316,7 @@ export async function makeTestStack(
     maxTasksPerPlan: 8,
     maxAttemptsPerTask: options.maxAttempts ?? 3,
     maxPlanningAttempts: options.maxPlanningAttempts ?? 2,
+    ...(options.crossProject === undefined ? {} : { crossProject: options.crossProject }),
   })
 
   const kernel = new UranusKernel({
@@ -296,13 +327,26 @@ export async function makeTestStack(
       idleBackoffMs: 30,
       leaseTtlMs: 60_000,
       checkpointKeep: 10,
+      runRetentionKeep: 10,
+      eventRetentionKeepSegments: 200,
+      concurrency: options.concurrency ?? 1,
       contextBudgetTokens: 20_000,
-      integration: { strategy: 'branch-only', draftPullRequests: true, prBase: 'main' },
+      integration: {
+        strategy: 'branch-only',
+        draftPullRequests: true,
+        prBase: 'main',
+        ...options.integration,
+      },
       providerId: provider.id,
       ...(options.escalationAgent === undefined
         ? {}
         : { escalationAgent: options.escalationAgent }),
+      ...(options.autoPlanBacklog === undefined
+        ? {}
+        : { backlog: { autoPlan: options.autoPlanBacklog } }),
     },
+    ...(options.backlogPort === undefined ? {} : { backlog: options.backlogPort }),
+    ...(options.validations === undefined ? {} : { validations: options.validations }),
     ...(options.withReplanner === true ? { replanner: planning } : {}),
     ...(options.gates === undefined
       ? {}
@@ -322,13 +366,13 @@ export async function makeTestStack(
             policy: options.gatePolicy ?? DEFAULT_GATE_POLICY,
           }),
           findingsToTasks: findingsToTaskDrafts,
+          // Mesma política nos dois lados, como na composição real: o teste
+          // que ajusta `gatePolicy` precisa ver o efeito na derivação também.
+          followUpPolicy: options.gatePolicy ?? DEFAULT_GATE_POLICY,
+          ...(options.onDeferredFinding === undefined
+            ? {}
+            : { deferFinding: options.onDeferredFinding }),
         }),
-  })
-
-  events.on('TickStarted', () => {
-    void state.tasks.all().then((tasks) => {
-      taskCache = tasks
-    })
   })
 
   return {
@@ -358,6 +402,7 @@ export async function makeTestStack(
         touches: ['src/**'],
         attempts: 0,
         maxAttempts: options.maxAttempts ?? 3,
+        repairAttempts: 0,
         labels: [],
         createdAt: now,
         updatedAt: now,

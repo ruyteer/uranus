@@ -110,4 +110,11 @@ export interface EventStore {
   seal(beforeSeq: number): Promise<void>
 
   close(): Promise<void>
+
+  /**
+   * Apaga segmentos além dos últimos `keep` (Fase 9: poda de eventos).
+   * Opcional — stores sem armazenamento em segmento (ex.: fakes em memória
+   * de teste) simplesmente não implementam.
+   */
+  prune?(keep: number): Promise<number>
 }

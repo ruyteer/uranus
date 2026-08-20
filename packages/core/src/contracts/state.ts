@@ -101,4 +101,12 @@ export interface RunRepository {
   find(id: RunId): Promise<Run | undefined>
   latest(): Promise<Run | undefined>
   unfinished(): Promise<readonly Run[]>
+  /**
+   * IDs de runs já terminados (`completed`/`failed`), do mais antigo pro mais
+   * recente, além dos últimos `keepMostRecent` — candidatos a ter os
+   * checkpoints podados (Fase 9). As linhas de `runs` em si NÃO são apagadas
+   * por este método: histórico de run é barato e serve `uranus status`/logs;
+   * só os checkpoints (arquivo + índice) desses runs antigos são descartáveis.
+   */
+  oldFinished(keepMostRecent: number): Promise<readonly RunId[]>
 }

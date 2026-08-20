@@ -41,6 +41,16 @@ export interface MemoryStore {
 
   export(): AsyncIterable<MemoryRecord>
   close(): Promise<void>
+
+  /**
+   * Remove do disco e do cache em processo os registros supersedidos há mais
+   * de `olderThanMs` (Fase 9: compactação em escala). `compact()` nunca
+   * apaga — só supersede — então sem isto tanto `.uranus/memory/**` quanto o
+   * `Map` em memória do store crescem pra sempre num run de longa duração,
+   * mesmo com o número de registros ATIVOS por escopo limitado. Opcional:
+   * stores sem persistência em arquivo (fakes de teste) não precisam.
+   */
+  pruneSuperseded?(olderThanMs: number): Promise<number>
 }
 
 /**

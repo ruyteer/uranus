@@ -1,7 +1,38 @@
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { unwrap } from '@uranus/core'
+import type { CodeHost, PullRequestRef, PullRequestRequest } from '@uranus/core'
+import { newRunId, ok, unwrap } from '@uranus/core'
 import { createGitRepo, gitIn, withTempDir } from '@uranus/testkit'
 import { artifactAcceptance, makeTestStack } from './test-stack.js'
+
+/** CodeHost fake: registra chamadas em vez de bater no GitHub de verdade. */
+function makeFakeCodeHost(options: { existingPr?: PullRequestRef } = {}): CodeHost & {
+  readonly opened: PullRequestRequest[]
+  readonly updated: { ref: PullRequestRef; patch: Partial<PullRequestRequest> }[]
+} {
+  const opened: PullRequestRequest[] = []
+  const updated: { ref: PullRequestRef; patch: Partial<PullRequestRequest> }[] = []
+  return {
+    id: 'fake-github',
+    opened,
+    updated,
+    openPullRequest: (request) => {
+      opened.push(request)
+      return Promise.resolve(
+        ok({ host: 'github', repo: 'acme/repo', number: 1, url: 'https://github.com/acme/repo/pull/1' }),
+      )
+    },
+    updatePullRequest: (ref, patch) => {
+      updated.push({ ref, patch })
+      return Promise.resolve(ok())
+    },
+    checksStatus: () => Promise.resolve(ok({ state: 'unknown', checks: [] })),
+    listIssues: () => Promise.resolve(ok([])),
+    findOpenPullRequestForTask: () => Promise.resolve(ok(options.existingPr)),
+  }
+}
 
 describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
   it('caminho feliz: task → worktree → executor → verificação → commit → done', async () => {
@@ -63,6 +94,85 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
         expect(attempts).toHaveLength(1)
         expect(attempts[0]!.outcome?.status).toBe('verified')
         expect(attempts[0]!.outcome?.diff?.isEmpty).toBe(false)
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 60_000)
+
+  it('stash órfão de uma task anterior (outro worktree, já descartado) não é tocado — só o stash desta sessão é devolvido', async () => {
+    await withTempDir(async (dir) => {
+      createGitRepo({
+        dir,
+        files: { 'src/index.ts': 'export {}\n', 'src/outro.ts': 'export const x = 1\n' },
+      })
+
+      // Simula o órfão: uma task ANTERIOR (outro worktree, hoje descartado)
+      // deixou um stash pra trás. `git stash` é um ref do repositório
+      // inteiro — sobrevive mesmo depois do worktree que o criou sumir, e
+      // aparece igual em qualquer worktree novo.
+      execFileSync('git', ['-C', dir, 'checkout', '-b', 'branch-de-outra-task'])
+      writeFileSync(join(dir, 'src', 'outro.ts'), 'export const x = 999\n')
+      execFileSync('git', ['-C', dir, 'stash'])
+      execFileSync('git', ['-C', dir, 'checkout', 'main'])
+
+      const stack = await makeTestStack(dir, [
+        {
+          writes: { 'src/hello.ts': 'export const hello = "ola mundo"\n' },
+          act: (workdir) => {
+            execFileSync('git', ['stash'], { cwd: workdir })
+          },
+        },
+      ])
+      try {
+        const task = await stack.enqueue({
+          title: 'Adicionar hello',
+          acceptance: artifactAcceptance('src/hello.ts', 'ola mundo'),
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        // A task da sessão atual recuperou o próprio stash e terminou bem.
+        const final = await stack.state.tasks.find(task.id)
+        expect(final?.state).toBe('done')
+
+        // O órfão da "outra task" continua exatamente onde estava — nunca
+        // foi tocado, nunca virou conflito, nunca sumiu.
+        const remaining = execFileSync('git', ['-C', dir, 'stash', 'list']).toString().trim()
+        expect(remaining.split('\n').filter((l) => l.trim() !== '')).toHaveLength(1)
+        expect(remaining).toContain('branch-de-outra-task')
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 60_000)
+
+  it('git stash sobrando (agente que isola um teste e esquece o pop) não derruba a task — o kernel devolve antes de verificar', async () => {
+    await withTempDir(async (dir) => {
+      createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+      const stack = await makeTestStack(dir, [
+        {
+          writes: { 'src/hello.ts': 'export const hello = "ola mundo"\n' },
+          act: (workdir) => {
+            // Reproduz o que se via ao vivo: o agente edita, roda `git stash`
+            // pra testar outra coisa numa working tree limpa, e esquece o pop.
+            execFileSync('git', ['stash'], { cwd: workdir })
+          },
+        },
+      ])
+      try {
+        const task = await stack.enqueue({
+          title: 'Adicionar hello',
+          acceptance: artifactAcceptance('src/hello.ts', 'ola mundo'),
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const final = await stack.state.tasks.find(task.id)
+        expect(final?.state).toBe('done')
+        expect(final?.attempts).toBe(1)
       } finally {
         await stack.close()
       }
@@ -320,4 +430,231 @@ describe('UranusKernel — o ciclo completo (DoD Fase 2)', () => {
       }
     })
   }, 60_000)
+
+  it('dependência já concluída é vista de cara, sem precisar de um tick antes (regressão)', async () => {
+    // Reproduz exatamente o bug real: `taskState()` do scheduler dependia de
+    // um cache atualizado por evento `TickStarted` — um comando "de leitura"
+    // como `uranus task why`, ou a primeira avaliação antes de qualquer tick
+    // rodar, via um scheduler recém-construído, sempre via esse cache vazio e
+    // vetava por `dependency-ready` mesmo com a dependência já `done` no
+    // banco. Aqui não rodamos o kernel nem uma vez — só gravamos as tasks
+    // direto e chamamos `explain()` num scheduler novo.
+    await withTempDir(async (dir) => {
+      createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+      const stack = await makeTestStack(dir, [])
+      try {
+        const done = await stack.enqueue({
+          title: 'Dependência já concluída',
+          touches: ['src/a.ts'],
+          acceptance: artifactAcceptance('src/a.ts', 'a'),
+        })
+        unwrap(await stack.state.tasks.save({ ...done, state: 'done' }))
+
+        const dependent = await stack.enqueue({
+          title: 'Depende da anterior',
+          touches: ['src/b.ts'],
+          deps: [done.id],
+          acceptance: artifactAcceptance('src/b.ts', 'b'),
+        })
+
+        const now = Date.now()
+        const explanation = stack.deps.scheduler.explain(dependent, {
+          now,
+          stats: await stack.deps.queue.stats(),
+          budget: stack.deps.budget.state(),
+          activeLeases: await stack.deps.queue.activeLeases(now),
+          recentOutcomes: [],
+          mix: {},
+          observedMix: {},
+          providerHealth: {},
+          restrictedMode: false,
+        })
+        expect(explanation.eligible).toBe(true)
+        expect(explanation.vetoedBy).not.toContain('dependency-ready')
+      } finally {
+        await stack.close()
+      }
+    })
+  })
+
+  it('orçamento do run esgotado pausa o kernel e avisa uma vez só, nunca em silêncio', async () => {
+    await withTempDir(async (dir) => {
+      createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+      const stack = await makeTestStack(
+        dir,
+        [{ writes: { 'src/hello.ts': 'export const hello = "ola mundo"\n' } }],
+        { budgetUsd: 0 },
+      )
+      try {
+        await stack.enqueue({
+          title: 'Task qualquer',
+          acceptance: artifactAcceptance('src/hello.ts', 'ola mundo'),
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+
+        // tickIntervalMs=20 no test-stack — o kernel deve perceber o
+        // orçamento esgotado e pausar rápido, sem precisar de mais que isso.
+        const deadline = Date.now() + 2_000
+        while (stack.kernel.status().state !== 'paused' && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        expect(stack.kernel.status().state).toBe('paused')
+
+        // Fica pausado mais um pouco — não pode reemitir o aviso a cada tick.
+        await new Promise((resolve) => setTimeout(resolve, 150))
+
+        const names: string[] = []
+        for await (const event of stack.eventStore.read(1)) names.push(event.name)
+        expect(names.filter((n) => n === 'BudgetExhausted')).toHaveLength(1)
+        expect(names).toContain('KernelPaused')
+        // A task nunca chegou a rodar: orçamento vetou antes do admit.
+        expect(names).not.toContain('AgentRunStarted')
+
+        await stack.kernel.stop('fim do teste')
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 15_000)
+
+  describe('integração pull-request: sincronização com o remoto e dedupe de PR', () => {
+    it('PR já aberto por uma tentativa irmã (mesma task) é atualizado, nunca duplicado', async () => {
+      await withTempDir(async (base) => {
+        const bareDir = join(base, 'origin.git')
+        mkdirSync(bareDir, { recursive: true })
+        gitIn(bareDir, 'init', '--bare', '-b', 'main')
+
+        const dir = join(base, 'work')
+        createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+        gitIn(dir, 'remote', 'add', 'origin', bareDir)
+        gitIn(dir, 'push', 'origin', 'main')
+
+        const existingPr: PullRequestRef = {
+          host: 'github',
+          repo: 'acme/repo',
+          number: 7,
+          url: 'https://github.com/acme/repo/pull/7',
+        }
+        const codeHost = makeFakeCodeHost({ existingPr })
+
+        const stack = await makeTestStack(
+          dir,
+          [{ writes: { 'src/hello.ts': 'export const hello = "ola mundo"\n' } }],
+          {
+            integration: { strategy: 'pull-request', pushRemote: 'origin', prBase: 'main' },
+            codeHost,
+          },
+        )
+        try {
+          const task = await stack.enqueue({
+            title: 'Adicionar hello',
+            acceptance: artifactAcceptance('src/hello.ts', 'ola mundo'),
+          })
+
+          unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+          await stack.kernel.wait()
+
+          const final = await stack.state.tasks.find(task.id)
+          expect(final?.state).toBe('done')
+          // O caminho de dedupe (findOpenPullRequestForTask encontrou o PR da
+          // "tentativa irmã") atualiza o PR existente em vez de abrir outro.
+          expect(codeHost.opened).toHaveLength(0)
+          expect(codeHost.updated).toHaveLength(1)
+          expect(codeHost.updated[0]!.ref).toEqual(existingPr)
+        } finally {
+          await stack.close()
+        }
+      })
+    }, 60_000)
+
+    it('rebase em conflito contra o remoto nunca abre PR — task bloqueia com a causa visível', async () => {
+      await withTempDir(async (base) => {
+        const bareDir = join(base, 'origin.git')
+        mkdirSync(bareDir, { recursive: true })
+        gitIn(bareDir, 'init', '--bare', '-b', 'main')
+
+        const dir = join(base, 'work')
+        createGitRepo({
+          dir,
+          files: { 'src/index.ts': 'export {}\n', 'src/shared.ts': 'export const shared = 1\n' },
+        })
+        gitIn(dir, 'remote', 'add', 'origin', bareDir)
+        gitIn(dir, 'push', 'origin', 'main')
+
+        // Tarefa irmã já mergeou uma mudança na mesma linha — sem que o
+        // checkout local de onde os workspaces nascem tenha visto isso
+        // (Uranus nunca dá fetch/pull na main local sozinho).
+        const sibling = join(base, 'sibling')
+        gitIn(base, 'clone', bareDir, sibling)
+        writeFileSync(join(sibling, 'src', 'shared.ts'), 'export const shared = 2\n')
+        gitIn(sibling, 'add', '--all')
+        gitIn(sibling, 'commit', '-m', 'task irmã: muda shared.ts')
+        gitIn(sibling, 'push', 'origin', 'main')
+
+        const codeHost = makeFakeCodeHost()
+        const stack = await makeTestStack(
+          dir,
+          [{ writes: { 'src/shared.ts': 'export const shared = 99\n' } }],
+          {
+            integration: { strategy: 'pull-request', pushRemote: 'origin', prBase: 'main' },
+            codeHost,
+            maxAttempts: 1,
+          },
+        )
+        try {
+          const task = await stack.enqueue({
+            title: 'Muda shared de outro jeito',
+            acceptance: artifactAcceptance('src/shared.ts', 'shared = 99'),
+          })
+
+          unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+          await stack.kernel.wait()
+
+          const final = await stack.state.tasks.find(task.id)
+          expect(final?.state).toBe('blocked')
+          expect(final?.blockReason?.kind).toBe('human')
+          expect(final?.blockReason?.message).toContain('colidiu')
+          expect(codeHost.opened).toHaveLength(0)
+          expect(codeHost.updated).toHaveLength(0)
+        } finally {
+          await stack.close()
+        }
+      })
+    }, 60_000)
+  })
+
+  describe('recuperação (INV-4): task presa em "failed"', () => {
+    it('recover() devolve para "ready" uma task presa em failed por crash entre marcar a falha e decidir o retry', async () => {
+      await withTempDir(async (dir) => {
+        createGitRepo({ dir, files: { 'src/index.ts': 'export {}\n' } })
+        const stack = await makeTestStack(dir, [
+          { writes: { 'src/hello.ts': 'export const hello = "ola mundo"\n' } },
+        ])
+        try {
+          const task = await stack.enqueue({
+            title: 'Tarefa qualquer',
+            acceptance: artifactAcceptance('src/hello.ts', 'ola mundo'),
+          })
+
+          // `failed` é um estado de trânsito de um instante só dentro de
+          // `handleFailure` (kernel.ts): marca a falha, depois decide
+          // blocked/ready/draft. Um crash bem nesse meio deixa a task presa
+          // aqui — e `failed` não é `isActive`, então a reconciliação de
+          // recovery a ignorava antes desta correção.
+          unwrap(await stack.state.tasks.save({ ...task, state: 'failed' }))
+
+          const report = unwrap(
+            await stack.deps.recovery.recover(newRunId(), new AbortController().signal),
+          )
+          expect(report.tasksReset).toContain(task.id)
+
+          const after = await stack.state.tasks.find(task.id)
+          expect(after?.state).toBe('ready')
+        } finally {
+          await stack.close()
+        }
+      })
+    })
+  })
 })

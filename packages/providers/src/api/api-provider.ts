@@ -26,6 +26,7 @@ import { renderContextPack } from '../render-context.js'
 import { extractJson } from '../structured.js'
 import type { ChatMessage, ChatToolCall, ChatToolDefinition } from './chat-types.js'
 import { ChatClient } from './http-client.js'
+import { recoverToolCalls } from './tool-call-recovery.js'
 import {
   DEFAULT_FILE_TOOLS,
   toolsForPermissions,
@@ -270,7 +271,14 @@ class ApiSession implements ProviderSession {
         {
           model,
           messages,
-          ...(toolDefs.length > 0 ? { tools: toolDefs, tool_choice: 'auto' as const } : {}),
+          // No 1º turno nada foi tocado ainda, então força uma tool-call em vez
+          // de confiar só no prompt — modelos genéricos (fora do Claude/CLI)
+          // às vezes respondem só em texto quando `auto` deixa a decisão livre.
+          // Turnos seguintes voltam a `auto` para ele poder concluir sem forçar
+          // uma chamada supérflua quando já terminou.
+          ...(toolDefs.length > 0
+            ? { tools: toolDefs, tool_choice: turns === 1 ? 'required' : 'auto' }
+            : {}),
           ...(this.options.temperature === undefined
             ? {}
             : { temperature: this.options.temperature }),
@@ -308,15 +316,53 @@ class ApiSession implements ProviderSession {
 
       const choice = response.value.choices[0]!
       const message = choice.message
-      messages.push(message)
 
-      if (message.content !== null && message.content.trim() !== '') {
+      // Servidor que não converte a chamada em `tool_calls` a deixa no texto.
+      // Sem esta recuperação, o laço interpreta "o modelo não pediu nada" e a
+      // sessão termina sem tocar em arquivo — ver `tool-call-recovery.ts`.
+      let calls = message.tool_calls ?? []
+      let recovered = false
+      if (calls.length === 0) {
+        const fromText = recoverToolCalls(
+          message.content,
+          this.options.tools.map((tool) => tool.name),
+          `${this.id}_t${String(turns)}`,
+        )
+        if (fromText.length > 0) {
+          calls = fromText
+          recovered = true
+          logger.debug('Chamada de ferramenta recuperada do texto da resposta', {
+            ferramentas: fromText.map((call) => call.function.name),
+          })
+        }
+      }
+
+      // Histórico normalizado: a mensagem entra com `tool_calls` preenchido, e
+      // sem o texto que era a chamada. Empilhar um `role: "tool"` sem a chamada
+      // correspondente quebra a conversa em servidores mais estritos.
+      messages.push(recovered ? { ...message, content: null, tool_calls: calls } : message)
+
+      // Texto que era, na verdade, uma chamada de ferramenta não é resposta do
+      // modelo: tratá-lo como tal faria a chamada crua vazar para o resumo da
+      // tentativa e para a extração de saída estruturada.
+      if (!recovered && message.content !== null && message.content.trim() !== '') {
         finalText = message.content
         this.events.push({ type: 'text', delta: message.content })
       }
 
-      const calls = message.tool_calls ?? []
       if (calls.length === 0) {
+        // Encerrar no primeiro turno sem ter chamado ferramenta nenhuma é o
+        // sintoma de "o modelo não edita arquivos". As causas são várias
+        // (modelo sem function calling, template que não emite `tool_calls`,
+        // modelo que só descreve o que faria) e distingui-las sem ver o texto
+        // cru é adivinhação. Em `debug` isso fica registrado uma vez.
+        if (turns === 1 && this.options.tools.length > 0) {
+          logger.debug('Sessão terminou no 1º turno sem chamar ferramenta', {
+            finishReason: choice.finish_reason,
+            ferramentasOferecidas: this.options.tools.length,
+            respostaCrua: (message.content ?? '').slice(0, 1_000),
+          })
+        }
         if (choice.finish_reason === 'length') status = 'limit_reached'
         break
       }

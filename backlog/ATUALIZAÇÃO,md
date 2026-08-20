@@ -1,0 +1,58 @@
+Vamos fazer uma grande atualização no uranus. Aqui vou especificar tudo para você:
+
+Basicamente, hoje o uranus faz todas as validações com código. 
+Eu gosto muito disso, mas vamos suspender por enquanto. 
+
+Outro ponto é que o uranus hoje trabalha com multiplas IAs, mas agroa eu quero apenas que trabalhe com codex cli e claude code cli. 
+As demais IAs vamos pausar e implementar mais pra frente. 
+
+Quero simplificar o uranus para a usabilidade ser mais amigável com usuários inexperientes. 
+
+Portanto, agora o uranus vai fucnioanr dessa forma:
+O claude code vai ser inicializado a partir do uranus e não mais a partir do claude direto, ou seja, as pessoas não vão usar o claude pelo "claude" no terminal, elas vão usar o "uranus" pelo terminal, que vai usaro claude code cli. 
+A interface, usabilidade e resposta tem que ser igual ao do claude. Se o usuário quiser mandar prompts, ele vai poder mandar. 
+Mas você vai separar o claude sempre em agentes, com um orquestrador mestre. O uranus já vai deixar o claude treinado, com as skills, contextos, ensinamentos. 
+Toda as validações de lint, escopo, etc, vão ser feitas pelo claude code ou codex. Vamos focar mais no claude hoje, depois vamos pro codex. 
+Mas basicaemtne o usuário vai poder mandar prompts, se ele quiser acessar a interface cli semelhante ao do claude code, para mandar prompts pro orquestrador ler, entender e aplicar. 
+Mas, por padrão, vai funcionar mais ou menos da forma que é hoje:
+o usuário cadastra items no backlog, e as tasks que serão feitas, vão ser planejadas pelo próprio claude. Assim, ele mesmo vai ler as tasks e vai mandar pra cada agente. Ou seja, não precisa você criar multiplas sessões manuais com o claude, ele mesmo faz isso se você orientar. Você pode pedir pro claude colocar vários agentes cada um com sua responsabilidade. 
+Então, não vai ser 5 sessões do claude, vai ser uma só, mas esse vai ser o orquestrador, que vai criar mais outras vários agentes pra fazer o que foi solicitado no backlog e quebrado em tasks. 
+
+Toda a organização dos agentes deve ser exibida pro usuário. 
+
+Algumas instruções que gosto (detalhe: isso é de outro projeto, voce pode aprimorar para aplicar no uranus o que não temos ainda, isso é bom pra ter em todo projeto, ou seja, cada projeto, sempe que inicair com uranus, ele temq  seguir esses comportamentos básicos saca?):
+
+
+```
+Você deverá ler todas as tasks que estão neste backlog. Cada uma tem sua especificação, porém todas devem seguir as orientações padrões desta task principal de configuração:
+
+# Não rode testes:
+Testes não são utilizados no projeto, então não há motivo para validar testes. Não perca tempo escrevendo e nem rodando. 
+
+# Orquestre agentes:
+Eu quero que você orquestre a maioria das tasks. Coloque agentes diferentes para trabalhar em cada tarefa e, de acordo com o nível de complexidade, utilize modelos adequados e referentes àquela necessidade. Exemplo: haiku faz uma coisa X, que é simples e o opus faz algo mais complexo. 
+Além disso, separe funções pra cada agente: mantenha o máximo de agentes de execução em paralelo, cada um realizando mini tarefas, mas também mantenha agentes em cada função de testar, validar, etc.
+
+# Paralelismo
+Trabalhe com o máximo de agentes em paralelo possível.
+
+# Backlog
+Quebre cada tarefa do backlog anotada aqui em subtarefas menores, para dar mais precisão e não precisar matar uma formiga com uma bazuca. Assim, você entende a complexidade de cada tarefa e designa um agente adequado para realizar a mesma. 
+
+# Custo
+Tome cuidado com o custo de limite. Procure gastar o mínimo de tokens possíveis. Seja econômico, mas eficaz. Quando a sessão estiver nos 90% de uso, prestes a acabar, pare onde estava e guarde a memória de onde parou para prosseguirmos depois. 
+
+# Explicações
+Seja breve, claro e direto nas explicações, não precisa escrever grandes textos para falar comigo, perguntar, etc. Só seja direto, claro ,e explique de uma forma que eu iria entender. 
+
+# Testes
+Se necessário, somente se for necessário, você pode abrir o navegador no meu pc e visualizar a página do bot para ver se está tudo certo. 
+
+# Pull Request
+Ao terminar cada task, ou pequena task, para não perdermos tempo, já pode subir uma pull request. 
+Na verdade, apenas para tasks significativas, exemplo: corrigi um bug. Jà crie uma pull request. Pq assim, eu consigo ir subindo e testando as correções e implementações assim que você as termina, sem precisar esperar vc terminar todas as tasks do backlog. Então, terminou algo que significa algo, significativo, já faz uma pull request. 
+```
+
+
+
+Apóos ler tudo, monte um plano de implementação, faça perguntas, me diga coisas que são possíveis e as que são impossíveis, me dê sugestões também e me ajude a pensar. Assim, vamos ter a melhor ideia possível pro projeto. 

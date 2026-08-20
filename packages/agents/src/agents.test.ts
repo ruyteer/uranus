@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentRunContext, ProviderCapabilities } from '@uranus/core'
-import { EMPTY_USAGE, ZERO_USD, silentLogger, unwrap } from '@uranus/core'
+import type { AgentRunContext, ProjectId, ProviderCapabilities } from '@uranus/core'
+import { EMPTY_USAGE, ZERO_USD, silentLogger, systemClock, unwrap } from '@uranus/core'
+import { InProcessEventBus } from '@uranus/events'
 import { DefaultPromptRegistry, registerBuiltinPrompts } from '@uranus/prompts'
-import { ScriptedProvider, makeAttempt, makeTask, withTempDir } from '@uranus/testkit'
+import {
+  InMemoryEventStore,
+  ScriptedProvider,
+  makeAttempt,
+  makeTask,
+  withTempDir,
+} from '@uranus/testkit'
 import { DefaultAgentRegistry, validateSpec } from './registry.js'
 import { DefaultAgentRuntime, effectivePermissions } from './runtime.js'
 import { EXECUTOR_SPEC } from './executor-spec.js'
@@ -72,8 +79,31 @@ describe('DefaultAgentRegistry', () => {
   it('kind sem agente registrado falha com contexto', () => {
     const registry = new DefaultAgentRegistry()
     unwrap(registry.register(EXECUTOR_SPEC))
-    const resolved = registry.resolve(makeTask({ kind: 'security' }), CAPS)
+    // `security` NÃO serve de exemplo aqui: o Executor lida com esse kind de
+    // propósito (ver comentário em `executor-spec.ts`) — `infra` não é
+    // handled por ninguém no catálogo.
+    const resolved = registry.resolve(makeTask({ kind: 'infra' }), CAPS)
     expect(resolved.ok).toBe(false)
+  })
+
+  it('kind "security" roteia pro Executor, não pro agente Security — só-leitura não corrige nada (regressão)', () => {
+    // Achado real: `findingsToTaskDrafts` (gate-pipeline.ts) dá `kind: 'security'`
+    // às tasks de correção nascidas de um achado do Security. Sem o Executor
+    // no `handles`, essa task roteava de volta pro próprio Security — que não
+    // escreve arquivo (`fs.write: []`) e cujo prompt só funciona como gate
+    // (`diff`/`conventions` vêm de fora) — travando com "variáveis ausentes".
+    const registry = new DefaultAgentRegistry()
+    unwrap(registry.register(EXECUTOR_SPEC))
+    unwrap(
+      registry.register({
+        ...EXECUTOR_SPEC,
+        name: 'security',
+        handles: ['security'],
+        permissions: { ...EXECUTOR_SPEC.permissions, fs: { read: ['**'], write: [], deny: [] } },
+      }),
+    )
+    const resolved = registry.resolve(makeTask({ kind: 'security' }), CAPS)
+    expect(resolved.ok && resolved.value.name).toBe('executor')
   })
 
   it('rejeita spec inválida no registro, não no uso', () => {
@@ -246,6 +276,46 @@ describe('DefaultAgentRuntime', () => {
         new AbortController().signal,
       )
       expect(output.summary).toBe('hook:completed')
+    })
+  })
+
+  it('cada tool_call do provider vira um evento ToolCalled com resumo legível', async () => {
+    await withTempDir(async (dir) => {
+      const prompts = new DefaultPromptRegistry()
+      registerBuiltinPrompts(prompts)
+      const registry = new DefaultAgentRegistry()
+      unwrap(registry.register(EXECUTOR_SPEC))
+
+      const eventStore = new InMemoryEventStore()
+      const events = new InProcessEventBus({
+        store: eventStore,
+        clock: systemClock,
+        logger: silentLogger,
+        projectId: 'prj_teste' as ProjectId,
+      })
+      const runtime = new DefaultAgentRuntime({ prompts, registry, logger: silentLogger, events })
+
+      const provider = new ScriptedProvider([
+        {
+          writes: { 'src/feito.ts': 'ok' },
+          toolCalls: [
+            { name: 'Read', input: { file_path: 'src/a.ts' } },
+            { name: 'Bash', input: { command: 'pnpm test' } },
+          ],
+        },
+      ])
+
+      const seen: { tool: string; detail?: string }[] = []
+      events.on('ToolCalled', (event) => {
+        seen.push({ tool: event.payload.tool, ...(event.payload.detail === undefined ? {} : { detail: event.payload.detail }) })
+      })
+
+      await runtime.run(EXECUTOR_SPEC, makeContext(dir, provider), new AbortController().signal)
+
+      expect(seen).toEqual([
+        { tool: 'Read', detail: 'src/a.ts' },
+        { tool: 'Bash', detail: 'pnpm test' },
+      ])
     })
   })
 })

@@ -352,4 +352,45 @@ describe('DefaultMemoryManager', () => {
       await store.close()
     })
   })
+
+  it('maintain remove registros supersedidos antigos (Fase 9: compactação em escala)', async () => {
+    await withTempDir(async (dir) => {
+      const clock = new FakeClock()
+      const store = makeStore(dir, clock)
+      const eventStore = new InMemoryEventStore()
+      const bus = new InProcessEventBus({
+        store: eventStore,
+        clock,
+        logger: silentLogger,
+        projectId: PROJECT_ID,
+      })
+      const ONE_DAY_MS = 24 * 60 * 60 * 1000
+      const manager = new DefaultMemoryManager({
+        store,
+        events: bus,
+        logger: silentLogger,
+        maxRecordsPerScope: 50,
+        minConfidence: 0.3,
+        pruneSupersededOlderThanMs: 30 * ONE_DAY_MS,
+      })
+
+      const first = (await manager.remember([draft({ body: 'versão 1', confidence: 0.6 })]))[0]!
+      clock.advance(ONE_DAY_MS)
+      await manager.remember([draft({ body: 'versão 2', confidence: 0.6 })])
+
+      // Ainda dentro da janela: o supersedido continua no disco e no cache.
+      await manager.maintain(NEVER)
+      expect((await store.get(first.id))?.supersededBy).toBeDefined()
+
+      // 31 dias depois, a próxima manutenção remove de verdade.
+      clock.advance(31 * ONE_DAY_MS)
+      await manager.maintain(NEVER)
+      expect(await store.get(first.id)).toBeUndefined()
+
+      // A visão ativa nunca dependeu do registro removido.
+      const active = await store.getByKey('convention', 'imports-ordenados')
+      expect(active?.body).toBe('versão 2')
+      await store.close()
+    })
+  })
 })

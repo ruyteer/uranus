@@ -138,6 +138,30 @@ export class GitHubHost implements CodeHost {
     })
   }
 
+  async findOpenPullRequestForTask(
+    repoDir: string,
+    taskId: string,
+  ): Promise<Result<PullRequestRef | undefined>> {
+    const result = await this.gh(repoDir, [
+      'pr',
+      'list',
+      '--state',
+      'open',
+      '--search',
+      `"Task: ${taskId}" in:body`,
+      '--json',
+      'number,url',
+      '--limit',
+      '1',
+    ])
+    if (!result.ok) return result
+    const rows = tryParseJson<{ number: number; url: string }[]>(result.value) ?? []
+    const first = rows[0]
+    if (first === undefined) return ok(undefined)
+    const ref = parsePrUrl(first.url)
+    return ok(ref)
+  }
+
   async listIssues(query: IssueQuery): Promise<Result<readonly IssueRef[]>> {
     const args = [
       'issue',

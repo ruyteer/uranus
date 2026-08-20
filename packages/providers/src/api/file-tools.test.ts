@@ -191,6 +191,26 @@ describe('edit_file', () => {
       expect(result.content).toContain('PERMISSÃO NEGADA')
     })
   })
+
+  it('`old_text` vazio aponta a saída em vez de contar a string vazia', async () => {
+    // É assim que modelos menores pedem "acrescente ao arquivo". Sem o guarda,
+    // a contagem acha a string vazia entre cada par de caracteres e responde
+    // "aparece N vezes" — um número sem sentido sobre um problema que o modelo
+    // não tem como corrigir. Observado com qwen2.5-coder queimando todos os
+    // turnos disponíveis repetindo a mesma chamada.
+    await withTempDir(async (dir) => {
+      setup(dir)
+      const antes = readFileSync(join(dir, 'src', 'app.ts'), 'utf8')
+      const result = await editFileTool.execute(
+        { path: 'src/app.ts', old_text: '', new_text: '\nexport const novo = 1\n' },
+        context(dir),
+      )
+      expect(result.ok).toBe(false)
+      expect(result.content).not.toContain('vezes')
+      expect(result.content).toContain('write_file')
+      expect(readFileSync(join(dir, 'src', 'app.ts'), 'utf8')).toBe(antes)
+    })
+  })
 })
 
 describe('list_files', () => {

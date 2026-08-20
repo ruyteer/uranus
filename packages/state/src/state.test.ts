@@ -4,7 +4,7 @@ import type { Run, TaskId } from '@uranus/core'
 import { IntegrityError, newRunId, unwrap, usd } from '@uranus/core'
 import { FakeClock, makeAttempt, makeTask, withTempDir } from '@uranus/testkit'
 import { openState, stateDbPath } from './db.js'
-import { currentVersion, migrate } from './migrations.js'
+import { MIGRATIONS, currentVersion, migrate } from './migrations.js'
 import { openSqlite } from './node-sqlite-driver.js'
 import { readDigested, writeDigested, writeFileAtomic } from './snapshot.js'
 
@@ -46,6 +46,9 @@ describe('conversões do driver', () => {
   })
 })
 
+const LATEST_VERSION = Math.max(...MIGRATIONS.map((m) => m.version))
+const REPAIR_ATTEMPTS_MIGRATION = MIGRATIONS.find((m) => m.name === 'task_repair_attempts')!
+
 describe('driver + migrations', () => {
   it('falha alto ao abrir caminho impossível', () => {
     expect(() => openSqlite({ path: 'Z:\\nao\\existe\\state.db' })).toThrow()
@@ -62,12 +65,14 @@ describe('driver + migrations', () => {
   it('aplica migrations uma única vez', () => {
     const db = openSqlite({ path: ':memory:', wal: false })
     const first = migrate(db, NOW)
-    expect(first.applied).toEqual([1])
-    expect(first.currentVersion).toBe(1)
+    // Compara com o catálogo, não com uma lista literal: migration nova não
+    // deve exigir edição deste teste — o que ele prova é a idempotência.
+    expect(first.applied).toEqual(MIGRATIONS.map((m) => m.version))
+    expect(first.currentVersion).toBe(LATEST_VERSION)
 
     const second = migrate(db, NOW)
     expect(second.applied).toEqual([])
-    expect(currentVersion(db)).toBe(1)
+    expect(currentVersion(db)).toBe(LATEST_VERSION)
     db.close()
   })
 
@@ -146,12 +151,66 @@ describe('repositórios', () => {
       blockReason: { kind: 'budget', message: 'estourou', resolvableBy: 'human' },
       agentHint: 'executor',
       labels: ['mvp'],
+      // Vínculo com o item do backlog: sem round-trip, o kernel nunca saberia
+      // que a task concluída pertencia a um item e ele nunca fecharia sozinho.
+      backlogItemId: 'itm_20250101_abc',
     })
 
     unwrap(await state.tasks.save(task))
     const loaded = await state.tasks.find(task.id)
     expect(loaded).toEqual(task)
     state.close()
+  })
+
+  it('repairAttempts faz round-trip (contador separado de attempts)', async () => {
+    const state = openState({ path: ':memory:', now: NOW })
+    const task = makeTask({ attempts: 1, repairAttempts: 2 })
+
+    unwrap(await state.tasks.save(task))
+    expect((await state.tasks.find(task.id))?.repairAttempts).toBe(2)
+
+    // O upsert também precisa gravar o campo: sem isto o contador reiniciava a
+    // cada save e o teto de reparos nunca seria atingido.
+    unwrap(await state.tasks.save({ ...task, repairAttempts: 3 }))
+    expect((await state.tasks.find(task.id))?.repairAttempts).toBe(3)
+    state.close()
+  })
+
+  it('banco criado antes da v3 migra e lê repairAttempts como 0', async () => {
+    const { createTaskRepository } = await import('./repositories/task-repository.js')
+    const db = openSqlite({ path: ':memory:', wal: false })
+
+    // Um banco "de ontem": só as migrações que existiam antes da coluna.
+    const antigas = MIGRATIONS.filter((m) => m.version < REPAIR_ATTEMPTS_MIGRATION.version)
+    migrate(db, NOW, antigas)
+    db.prepare(
+      `INSERT INTO tasks (id, project_id, kind, title, intent, state, priority, deps, touches,
+         acceptance, attempts, max_attempts, labels, created_at, updated_at)
+       VALUES (?, 'prj_1', 'feature', 'Task de ontem', 'i', 'failed', 50, '[]', '["src/**"]',
+         '{"checks":[],"requireAll":true}', 2, 3, '[]', ?, ?)`,
+    ).run('tsk_antiga', NOW, NOW)
+
+    const result = migrate(db, NOW)
+    // Da v3 em diante, comparado com o catálogo: migração nova posterior a esta
+    // não deve exigir edição do teste — o que ele prova é que o banco antigo
+    // alcança o esquema atual sem perder a linha que já estava lá.
+    expect(result.applied).toEqual(
+      MIGRATIONS.filter((m) => m.version >= REPAIR_ATTEMPTS_MIGRATION.version).map(
+        (m) => m.version,
+      ),
+    )
+
+    const repo = createTaskRepository(db)
+    const loaded = await repo.find('tsk_antiga' as TaskId)
+    // O dado antigo continua lá — a migração é aditiva, não recria a linha.
+    expect(loaded?.title).toBe('Task de ontem')
+    expect(loaded?.attempts).toBe(2)
+    expect(loaded?.repairAttempts).toBe(0)
+
+    // E a linha migrada aceita gravação normal daqui em diante.
+    unwrap(await repo.save({ ...loaded!, repairAttempts: 1 }))
+    expect((await repo.find('tsk_antiga' as TaskId))?.repairAttempts).toBe(1)
+    db.close()
   })
 
   it('task sem opcionais volta sem os campos', async () => {
@@ -192,6 +251,27 @@ describe('repositórios', () => {
     unwrap(await state.tasks.save(task))
     unwrap(await state.tasks.delete(task.id))
     expect(await state.tasks.find(task.id)).toBeUndefined()
+    state.close()
+  })
+
+  it('selectAllTasksSync lê sem await, refletindo a gravação mais recente', async () => {
+    // Regressão: o scheduler usava um cache atualizado por evento
+    // fire-and-forget (`TickStarted`) que podia ficar permanentemente
+    // desatualizado se a atualização falhasse silenciosamente uma vez —
+    // travando `dependencyReadyPolicy` para sempre numa task cuja
+    // dependência já estava `done` de verdade no banco. Uma leitura síncrona
+    // direta elimina essa classe de bug: não há cache pra desatualizar.
+    const { selectAllTasksSync } = await import('./repositories/task-repository.js')
+    const state = openState({ path: ':memory:', now: NOW })
+    const task = makeTask({ title: 'a' })
+    unwrap(await state.tasks.save(task))
+
+    expect(selectAllTasksSync(state.db).map((t) => t.title)).toEqual(['a'])
+
+    // Sem nenhum "tick"/evento envolvido — a próxima gravação já aparece na
+    // PRÓXIMA leitura síncrona, imediatamente.
+    unwrap(await state.tasks.save({ ...task, state: 'done' }))
+    expect(selectAllTasksSync(state.db).map((t) => t.state)).toEqual(['done'])
     state.close()
   })
 
@@ -250,6 +330,46 @@ describe('repositórios', () => {
     expect(await state.runs.find(running.id)).toEqual(running)
     expect((await state.runs.unfinished()).map((r) => r.id)).toEqual([running.id])
     expect((await state.runs.latest())?.id).toBe(running.id)
+    state.close()
+  })
+
+  it('oldFinished lista runs terminados além dos últimos N (Fase 9: poda cross-run)', async () => {
+    const state = openState({ path: ':memory:', now: NOW })
+    const projectId = makeTask().projectId
+
+    const finished: Run[] = []
+    for (let i = 0; i < 5; i++) {
+      const run: Run = {
+        id: newRunId(NOW + i),
+        projectId,
+        startedAt: NOW + i,
+        finishedAt: NOW + i + 1,
+        status: i % 2 === 0 ? 'completed' : 'failed',
+        tick: i,
+      }
+      finished.push(run)
+      unwrap(await state.runs.save(run))
+    }
+    // Um run ainda em andamento nunca deve aparecer em `oldFinished`.
+    const stillRunning: Run = {
+      id: newRunId(NOW + 100),
+      projectId,
+      startedAt: NOW + 100,
+      status: 'running',
+      tick: 0,
+    }
+    unwrap(await state.runs.save(stillRunning))
+
+    // Mantém os 2 mais recentes (índices 4 e 3, por startedAt DESC); os 3
+    // mais antigos (0, 1, 2) são "velhos".
+    const stale = await state.runs.oldFinished(2)
+    expect(stale.map(String).sort()).toEqual(
+      [finished[0]!.id, finished[1]!.id, finished[2]!.id].map(String).sort(),
+    )
+    expect(stale).not.toContain(stillRunning.id)
+
+    // Manter mais do que existe não sobra nada pra podar.
+    expect(await state.runs.oldFinished(10)).toEqual([])
     state.close()
   })
 })

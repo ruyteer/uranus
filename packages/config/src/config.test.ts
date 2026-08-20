@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { withTempDir, createTempDir, type TempDir } from '@uranus/testkit'
+import { DEFAULT_VALIDATION_POLICY, resolveValidationPolicy } from '@uranus/core'
 import { deepMerge, envLayer, mergeLayers, traceOrigins } from './layers.js'
 import { loadConfig, parseConfig } from './loader.js'
 import { createConfigReader, scopedReader } from './reader.js'
@@ -109,6 +110,27 @@ describe('parseConfig', () => {
     }
   })
 
+  it('backlog: planeja sozinho por padrão, com teto de recusas', () => {
+    const result = parseConfig({ project: { name: 'demo' } })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.backlog).toEqual({ autoPlan: true, maxPlanningFailures: 2 })
+  })
+
+  it('backlog: aceita desligar o automático e rejeita teto fora do intervalo', () => {
+    const manual = parseConfig({ project: { name: 'demo' }, backlog: { autoPlan: false } })
+    expect(manual.ok).toBe(true)
+    if (manual.ok) {
+      expect(manual.value.backlog.autoPlan).toBe(false)
+      // Desligar o automático não muda o teto: `uranus plan` continua valendo.
+      expect(manual.value.backlog.maxPlanningFailures).toBe(2)
+    }
+
+    // Zero significaria "nunca planejar", disfarçado de teto — é erro de config.
+    const zero = parseConfig({ project: { name: 'demo' }, backlog: { maxPlanningFailures: 0 } })
+    expect(zero.ok).toBe(false)
+    if (!zero.ok) expect(zero.error.message).toContain('backlog.maxPlanningFailures')
+  })
+
   it('rejeita config sem projeto', () => {
     const result = parseConfig({})
     expect(result.ok).toBe(false)
@@ -131,6 +153,109 @@ describe('parseConfig', () => {
     })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error.message).toContain('kernel.concurrency')
+  })
+
+  it('linkedProjects: vazio por padrão; aceita alias e escopos customizados', () => {
+    const semLink = parseConfig({ project: { name: 'demo' } })
+    expect(semLink.ok).toBe(true)
+    if (semLink.ok) expect(semLink.value.linkedProjects).toEqual([])
+
+    const comLink = parseConfig({
+      project: { name: 'ui' },
+      linkedProjects: [{ path: '../core', alias: 'core', scopes: ['convention'] }],
+    })
+    expect(comLink.ok).toBe(true)
+    if (comLink.ok) {
+      expect(comLink.value.linkedProjects).toEqual([
+        {
+          path: '../core',
+          alias: 'core',
+          scopes: ['convention'],
+          limit: 6,
+          // Escrever no backlog do vizinho é permissão explícita, nunca herdada.
+          backlogWrite: false,
+        },
+      ])
+    }
+  })
+
+  it('linkedProjects.backlogWrite: opt-in explícito, com descrição para o Planner', () => {
+    const result = parseConfig({
+      project: { name: 'ui' },
+      linkedProjects: [
+        {
+          path: '../api',
+          alias: 'api',
+          backlogWrite: true,
+          description: 'API REST em Fastify que serve este front.',
+        },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const link = result.value.linkedProjects[0]!
+      expect(link.backlogWrite).toBe(true)
+      expect(link.description).toBe('API REST em Fastify que serve este front.')
+      // Sem `scopes` declarados o vizinho continua emprestando memória como antes.
+      expect(link.scopes).toEqual(['convention', 'architecture'])
+    }
+  })
+
+  it('validations: default é permissivo só no tratamento da falha', () => {
+    const result = parseConfig({ project: { name: 'demo' } })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.validations).toEqual({
+        enabled: true,
+        rules: {},
+        countTowardAttempts: false,
+        maxRepairAttempts: 3,
+      })
+      // Regras seguem todas bloqueantes; quem completa o parcial é o core.
+      expect(resolveValidationPolicy(result.value.validations).rules).toEqual(
+        DEFAULT_VALIDATION_POLICY.rules,
+      )
+      // Falha de validação deixou de gastar tentativa — o teto de tentativas
+      // reais pode ser maior sem virar loop infinito.
+      expect(result.value.kernel.maxAttemptsPerTask).toBe(10)
+    }
+  })
+
+  it('validations.rules parcial faz merge com o default', () => {
+    const result = parseConfig({
+      project: { name: 'demo' },
+      validations: { rules: { scope: 'advisory' }, maxRepairAttempts: 5 },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const policy = resolveValidationPolicy(result.value.validations)
+      expect(policy.rules.scope).toBe('advisory')
+      expect(policy.rules.tests).toBe('blocking')
+      expect(policy.maxRepairAttempts).toBe(5)
+    }
+  })
+
+  it('rejeita severidade e regra desconhecidas em validations', () => {
+    const severidade = parseConfig({
+      project: { name: 'demo' },
+      validations: { rules: { scope: 'talvez' } },
+    })
+    expect(severidade.ok).toBe(false)
+    if (!severidade.ok) expect(severidade.error.message).toContain('validations.rules')
+
+    const regra = parseConfig({
+      project: { name: 'demo' },
+      validations: { rules: { naoExiste: 'off' } },
+    })
+    expect(regra.ok).toBe(false)
+  })
+
+  it('rejeita escopo de memória desconhecido em linkedProjects', () => {
+    const result = parseConfig({
+      project: { name: 'ui' },
+      linkedProjects: [{ path: '../core', scopes: ['nao-existe'] }],
+    })
+    expect(result.ok).toBe(false)
   })
 })
 

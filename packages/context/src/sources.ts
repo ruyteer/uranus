@@ -1,6 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ContextFragment, ContextManager, ContextSource, MemoryStore } from '@uranus/core'
+import type {
+  ContextFragment,
+  ContextManager,
+  ContextSource,
+  MemoryScope,
+  MemoryStore,
+} from '@uranus/core'
 import {
   createMatcher,
   estimateTokens,
@@ -108,6 +114,65 @@ export function memorySource(store: MemoryStore): ContextSource {
         untrusted: record.source.kind === 'imported',
         refs: [...record.refs],
       }))
+    },
+    freshness(_input, _signal): Promise<string> {
+      return Promise.resolve(String(Date.now())) // memória muda dentro do run; sem cache
+    },
+  }
+}
+
+export interface LinkedProjectMemory {
+  /** Rótulo mostrado no fragmento (ex.: "[core] Memória [...]"). */
+  readonly alias: string
+  /** Aberto pela composição, apontando pro `.uranus/memory` do vizinho. */
+  readonly store: MemoryStore
+  readonly scopes: readonly MemoryScope[]
+  readonly limit?: number
+}
+
+/**
+ * Memória de projetos vinculados (ex.: backend/frontend em repos separados,
+ * cada um com seu próprio `.uranus`) — SEMPRE `untrusted` (INV-6).
+ *
+ * É memória curada, não conteúdo de arquivo — mas cruzou fronteira de
+ * projeto: quem escreveu não é necessariamente quem mantém este projeto, e a
+ * config que declara o link é o único ato de confiança humano aqui. `kind:
+ * 'external'` existe no catálogo de fragmentos exatamente pra este caso.
+ */
+export function linkedMemorySource(links: readonly LinkedProjectMemory[]): ContextSource {
+  return {
+    id: 'linked-memory',
+    cost: 'cheap',
+    kinds: ['external'],
+    async collect(input, _signal): Promise<readonly ContextFragment[]> {
+      const text = [input.task?.title ?? '', input.task?.intent ?? '', ...input.hints]
+        .join(' ')
+        .trim()
+
+      const fragments: ContextFragment[] = []
+      for (const link of links) {
+        const records = await link.store.query({
+          scopes: [...link.scopes],
+          ...(text === '' ? {} : { text }),
+          minConfidence: 0.3,
+          limit: link.limit ?? 6,
+        })
+        for (const record of records) {
+          fragments.push({
+            id: `linked-memory:${link.alias}:${record.id}`,
+            sourceId: 'linked-memory',
+            kind: 'external',
+            title: `[${link.alias}] Memória [${record.scope}]: ${record.title}`,
+            body: truncateMiddle(record.body, 4_000),
+            tokens: estimateTokens(record.body.slice(0, 4_000)),
+            priority: 40 + Math.round(record.confidence * 20),
+            pinned: false,
+            untrusted: true, // INV-6 — cruzou fronteira de projeto
+            refs: [],
+          })
+        }
+      }
+      return fragments
     },
     freshness(_input, _signal): Promise<string> {
       return Promise.resolve(String(Date.now())) // memória muda dentro do run; sem cache

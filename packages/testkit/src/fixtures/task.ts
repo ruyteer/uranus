@@ -45,6 +45,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     acceptance: makeContract(),
     attempts: 0,
     maxAttempts: 3,
+    repairAttempts: 0,
     labels: [],
     createdAt: now,
     updatedAt: now,

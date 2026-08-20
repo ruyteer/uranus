@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   HealthReport,
   Logger,
@@ -86,7 +90,7 @@ export class ClaudeCodeProvider implements Provider {
     }
   }
 
-  createSession(request: SessionRequest, signal: AbortSignal): Promise<ProviderSession> {
+  async createSession(request: SessionRequest, signal: AbortSignal): Promise<ProviderSession> {
     const contextText = renderContextPack(request.context)
     const instruction =
       request.outputSchema === undefined
@@ -94,9 +98,17 @@ export class ClaudeCodeProvider implements Provider {
         : appendSchemaInstruction(request.instruction, request.outputSchema)
     const prompt = contextText.length > 0 ? `${contextText}\n\n${instruction}` : instruction
 
+    // Prompt e system prompt vão por stdin / arquivo, nunca como argv: no
+    // Windows, CreateProcess tem um limite de ~32k caracteres pra linha de
+    // comando inteira, e o context pack estoura isso com facilidade
+    // (spawn ENAMETOOLONG). `claude -p` sem argumento posicional lê o prompt
+    // de stdin; `--append-system-prompt-file` é o equivalente por arquivo do
+    // `--append-system-prompt` de texto.
+    const systemPromptFile = join(tmpdir(), `uranus-sysprompt-${randomUUID()}.txt`)
+    await writeFile(systemPromptFile, request.systemPrompt, 'utf8')
+
     const args: string[] = [
       '-p',
-      prompt,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -104,8 +116,8 @@ export class ClaudeCodeProvider implements Provider {
       request.model ?? this.defaultModel,
       '--max-turns',
       String(request.limits.maxTurns),
-      '--append-system-prompt',
-      request.systemPrompt,
+      '--append-system-prompt-file',
+      systemPromptFile,
       '--permission-mode',
       'acceptEdits',
     ]
@@ -132,11 +144,17 @@ export class ClaudeCodeProvider implements Provider {
           CLAUDE_CODE_ENTRYPOINT: 'uranus',
         },
         maxOutputBytes: 16 * 1024 * 1024,
+        stdin: prompt,
       },
       signal,
     )
+    void child.wait().finally(() => {
+      void unlink(systemPromptFile).catch(() => {
+        /* arquivo temporário; falha de limpeza não é fatal */
+      })
+    })
 
-    return Promise.resolve(new ClaudeCodeSession(child, this, this.logger, expectsStructured))
+    return new ClaudeCodeSession(child, this, this.logger, expectsStructured)
   }
 
   estimateCost(usage: TokenUsage, model: string): Money {
@@ -254,6 +272,14 @@ class ClaudeCodeSession implements ProviderSession {
  * Leitura sempre liberada (o modelo precisa ler para editar); escrita/execução
  * derivam das permissões efetivas da task.
  */
+/**
+ * Ferramentas que não derivam de nenhum eixo "de domínio" (fs/exec/network) —
+ * só entram se `permissions.tools.allow` pedir por nome (ou `*`). Hoje é só
+ * `Skill`: sem isto, o campo `tools.allow` de um `AgentSpec` era decorativo
+ * pro modo `cli` (o modo `api` já respeitava via `file-tools.ts`).
+ */
+const STANDALONE_TOOLS = ['Skill'] as const
+
 export function mapPermissionsToTools(request: SessionRequest): readonly string[] {
   const tools: string[] = ['Read', 'Glob', 'Grep', 'LS']
 
@@ -268,5 +294,14 @@ export function mapPermissionsToTools(request: SessionRequest): readonly string[
   if (request.permissions.network !== false) {
     tools.push('WebFetch')
   }
+
+  const toolsAllow = request.permissions.tools.allow
+  const toolsDeny = new Set(request.permissions.tools.deny)
+  const wildcard = toolsAllow.includes('*')
+  for (const tool of STANDALONE_TOOLS) {
+    if (toolsDeny.has(tool)) continue
+    if (wildcard || toolsAllow.includes(tool)) tools.push(tool)
+  }
+
   return tools
 }

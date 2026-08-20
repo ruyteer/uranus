@@ -171,6 +171,22 @@ export const editFileTool: FileTool = {
       return { ok: false, content: '"old_text" e "new_text" são obrigatórios.' }
     }
 
+    // `old_text` vazio é como modelos menores pedem "acrescente ao arquivo".
+    // Sem este guarda, a contagem abaixo encontra a string vazia entre cada
+    // par de caracteres e responde "aparece 48 vezes" — um número que não quer
+    // dizer nada, sobre um problema que o modelo não tem como corrigir. O
+    // resultado observado com qwen2.5-coder era o laço gastar todos os turnos
+    // repetindo a mesma chamada. A mensagem precisa apontar a saída.
+    if (oldText === '') {
+      return {
+        ok: false,
+        content:
+          '"old_text" vazio não identifica onde editar. Para ACRESCENTAR ao arquivo, chame ' +
+          'write_file com o conteúdo atual seguido do trecho novo (leia o arquivo antes). ' +
+          'Para alterar um trecho, informe em "old_text" o texto exato a substituir.',
+      }
+    }
+
     let content: string
     try {
       content = await readFile(resolved.path, 'utf8')

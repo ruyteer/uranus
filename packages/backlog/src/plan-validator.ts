@@ -16,7 +16,12 @@ import {
   ok,
   toPosix,
 } from '@uranus/core'
-import type { PlannerCheck, PlannerOutput, PlannerTask } from './plan-schema.js'
+import type {
+  PlannerCheck,
+  PlannerCrossProjectItem,
+  PlannerOutput,
+  PlannerTask,
+} from './plan-schema.js'
 
 export interface PlanValidationOptions {
   /** Globs onde o plano PODE escrever. Vem da config do projeto. */
@@ -30,6 +35,15 @@ export interface PlanValidationOptions {
   readonly maxTasks: number
   /** Em modo restrito (R4) só tasks `test` são aceitas. */
   readonly restrictedMode: boolean
+  /**
+   * Aliases de projetos vizinhos onde este projeto pode CRIAR itens de backlog
+   * (`linkedProjects[].backlogWrite`).
+   *
+   * Ausente ou vazio ⇒ nenhum vizinho gravável, e qualquer `crossProject` no
+   * plano é rejeitado. É o default seguro: um projeto que nunca ouviu falar
+   * desta opção não passa a escrever no repo de ninguém.
+   */
+  readonly writableProjects?: readonly string[]
 }
 
 export interface ValidatedPlan {
@@ -42,6 +56,11 @@ export interface ValidatedPlan {
   /** `ref` do plano → índice em `drafts`. Usado para religar `deps` após criar ids. */
   readonly refOrder: readonly string[]
   readonly dependencies: Readonly<Record<string, readonly string[]>>
+  /**
+   * Itens a criar no backlog de vizinhos. Deliberadamente FORA de `drafts`:
+   * nenhum deles vira task na fila deste projeto.
+   */
+  readonly crossProject: readonly PlannerCrossProjectItem[]
 }
 
 /**
@@ -106,6 +125,10 @@ export function validatePlan(
   // poderiam rodar em paralelo (R6) e provavelmente deveriam ser uma só.
   detectScopeCollisions(output.tasks, rejections)
 
+  // ── Trabalho declarado em projetos vizinhos ───────────────────────────────
+  const crossProject = output.crossProject ?? []
+  validateCrossProject(crossProject, options, rejections)
+
   if (rejections.length > 0) return err(rejections)
 
   const order = sorted!
@@ -121,6 +144,7 @@ export function validatePlan(
     drafts,
     refOrder: order.map((task) => task.ref),
     dependencies,
+    crossProject,
   })
 }
 
@@ -314,6 +338,47 @@ function validateDependencies(
       })
     }
   }
+}
+
+/**
+ * Trabalho declarado para vizinhos: só passa o que aponta para um alias que o
+ * humano autorizou na config (`backlogWrite: true`).
+ *
+ * Alias desconhecido é REJEIÇÃO do plano inteiro, nunca item descartado em
+ * silêncio. O alias vem de saída de modelo — aceitar o plano ignorando a parte
+ * que não casou faria o Uranus reportar "planejado" tendo jogado fora
+ * justamente a metade que dependia do outro projeto.
+ */
+function validateCrossProject(
+  items: readonly PlannerCrossProjectItem[],
+  options: PlanValidationOptions,
+  rejections: PlanRejection[],
+): void {
+  if (items.length === 0) return
+
+  const writable = options.writableProjects ?? []
+  const known = new Set(writable)
+
+  items.forEach((item, index) => {
+    if (!known.has(item.project)) {
+      rejections.push({
+        code: 'unknown-cross-project',
+        message:
+          writable.length === 0
+            ? `O plano cria trabalho no projeto "${item.project}", mas este projeto não tem nenhum vizinho com permissão de escrita no backlog. Resolva tudo dentro deste projeto.`
+            : `O plano cria trabalho no projeto "${item.project}", que não é um vizinho gravável (disponíveis: ${writable.join(', ')}).`,
+        detail: { project: item.project, writable, crossProjectIndex: index },
+      })
+      return
+    }
+    if (item.kind !== undefined && !(TASK_KINDS as readonly string[]).includes(item.kind)) {
+      rejections.push({
+        code: 'invalid-task-kind',
+        message: `Item cross-project "${item.title}" usa o tipo desconhecido "${item.kind}".`,
+        detail: { project: item.project, crossProjectIndex: index },
+      })
+    }
+  })
 }
 
 function detectScopeCollisions(tasks: readonly PlannerTask[], rejections: PlanRejection[]): void {

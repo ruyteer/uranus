@@ -42,6 +42,7 @@ function task(overrides: Partial<Task> = {}): Task {
     acceptance: { checks: [], requireAll: true },
     attempts: 0,
     maxAttempts: 3,
+    repairAttempts: 0,
     labels: [],
     createdAt: NOW,
     updatedAt: NOW,
@@ -82,6 +83,16 @@ describe('máquina de estados', () => {
 
     const intoVerified = ALL_STATES.filter((s) => canTransition(s, 'verified'))
     expect(intoVerified).toEqual(['verifying'])
+  })
+
+  it('verified → failed é legal (achado bloqueante do gate de qualidade)', () => {
+    // Regressão: a cadeia de qualidade roda DEPOIS da verificação passar —
+    // um gate que bloqueia precisa reprovar uma task já `verified` pelo
+    // mesmo caminho de falha que `verifying`/`integrating` já têm. Sem esta
+    // aresta, `handleFailure` (kernel.ts) derrubava o loop inteiro com
+    // "Transição ilegal: verified → failed" ao invés de bloquear a task.
+    const result = transition(task({ state: 'verified' }), 'failed', { at: NOW })
+    expect(isOk(result)).toBe(true)
   })
 
   it('aplica transição válida atualizando o timestamp', () => {
@@ -125,6 +136,29 @@ describe('máquina de estados', () => {
     const base = task({ state: 'claimed', attempts: 1 })
     expect(unwrap(transition(base, 'running', { at: NOW })).attempts).toBe(1)
     expect(unwrap(transition(base, 'running', { at: NOW, countAttempt: true })).attempts).toBe(2)
+  })
+
+  it('conta reparo em contador separado da tentativa', () => {
+    // O ponto do contador separado: voltar para a fila por falha de validação
+    // não pode consumir tentativa de execução.
+    const base = task({ state: 'failed', attempts: 2, repairAttempts: 1 })
+    const repaired = unwrap(transition(base, 'ready', { at: NOW, countRepair: true }))
+    expect(repaired.repairAttempts).toBe(2)
+    expect(repaired.attempts).toBe(2)
+  })
+
+  it('resetRepair zera e vence countRepair', () => {
+    const base = task({ state: 'verifying', repairAttempts: 3 })
+    expect(
+      unwrap(transition(base, 'verified', { at: NOW, resetRepair: true })).repairAttempts,
+    ).toBe(0)
+    const both = transition(base, 'verified', { at: NOW, resetRepair: true, countRepair: true })
+    expect(unwrap(both).repairAttempts).toBe(0)
+  })
+
+  it('preserva repairAttempts em transição que não fala do assunto', () => {
+    const base = task({ state: 'ready', repairAttempts: 2 })
+    expect(unwrap(transition(base, 'claimed', { at: NOW })).repairAttempts).toBe(2)
   })
 
   it('classifica estados ativos e terminais', () => {

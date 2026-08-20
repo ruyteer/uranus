@@ -1,4 +1,5 @@
 ﻿export * from './kernel.js'
+export * from './repair.js'
 export * from './scheduler.js'
 export * from './planning/planning-service.js'
 export * from './quality/gate-pipeline.js'

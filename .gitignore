@@ -25,3 +25,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Estado de sessão local do Claude Code, não faz sentido versionar.
+.claude/scheduled_tasks.lock

@@ -3,7 +3,16 @@ packages:
 allowBuilds:
   # esbuild é dependência do vitest e precisa do postinstall para baixar o binário.
   esbuild: true
+  # Terminal embutido do dashboard (uranus chat na web). Usa o binário
+  # pré-compilado do pacote (prebuilds/win32-x64, ConPTY) — o install script do
+  # node-pty tenta o prebuild primeiro e só cai para compilação nativa se não
+  # achar um para a plataforma atual. Verificado manualmente nesta máquina sem
+  # MSVC: o prebuild carrega sozinho, sem precisar de build tools.
+  node-pty: true
 
-# Motores nativos ficam fora do escopo por decisão de arquitetura (ADR-004):
-# a camada SQLite usa `node:sqlite` (builtin do Node >= 22) atrás de um driver
-# abstrato, evitando compilação nativa no Windows.
+# Motores nativos ficam fora do escopo por decisão de arquitetura (ADR-004) para
+# a camada de estado — SQLite usa `node:sqlite` (builtin do Node >= 22) atrás de
+# um driver abstrato, evitando compilação nativa no Windows. O node-pty acima é
+# uma exceção deliberada e isolada ao terminal embutido: não há alternativa pura
+# em JS para abrir um pseudo-terminal real, e o prebuild evita o problema que a
+# ADR queria evitar (compilar na máquina do usuário).

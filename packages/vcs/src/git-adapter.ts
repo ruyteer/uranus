@@ -148,7 +148,16 @@ export class GitAdapter implements VcsAdapter {
   }
 
   async stage(dir: string, paths: readonly string[]): Promise<Result<void>> {
-    const args = paths.length === 0 ? ['add', '--all'] : ['add', '--', ...paths]
+    const addArgs = paths.length === 0 ? ['add', '--all'] : ['add', '--', ...paths]
+    // `git()` roda com core.autocrlf=false globalmente (checkout não deve
+    // reescrever bytes). Mas se o passo de escrita do executor gravar CRLF
+    // (aconteceu: PRs inteiras viraram "conflito gigante" porque um commit
+    // ficou 100% CRLF num repo 100% LF), esse mesmo `false` deixaria o byte
+    // errado ir pro commit intacto. `-c` tem precedência sobre o
+    // GIT_CONFIG_PARAMETERS do processo, então só este `add` normaliza
+    // CRLF→LF (heurística de binário do próprio git, sem precisar de
+    // `.gitattributes` no repo) — commits do Uranus saem sempre LF.
+    const args = ['-c', 'core.autocrlf=input', ...addArgs]
     const result = await this.gitOk(dir, args)
     return result.ok ? ok() : result
   }
@@ -242,6 +251,17 @@ export class GitAdapter implements VcsAdapter {
     return added === '-' ? 0 : Number.parseInt(added, 10) || 0
   }
 
+  async stashList(dir: string): Promise<readonly string[]> {
+    const result = await this.git(dir, ['stash', 'list'])
+    if (result.exitCode !== 0) return []
+    return result.stdout.split('\n').filter((line) => line.trim() !== '')
+  }
+
+  async stashPop(dir: string): Promise<Result<void>> {
+    const result = await this.gitOk(dir, ['stash', 'pop'])
+    return result.ok ? ok() : result
+  }
+
   async push(dir: string, branch: string, options: PushOptions = {}): Promise<Result<void>> {
     const args = ['push']
     if (options.setUpstream === true) args.push('--set-upstream')
@@ -249,6 +269,21 @@ export class GitAdapter implements VcsAdapter {
     args.push(options.remote ?? 'origin', branch)
     const result = await this.gitOk(dir, args)
     return result.ok ? ok() : result
+  }
+
+  async fetch(dir: string, remote = 'origin'): Promise<Result<void>> {
+    const result = await this.gitOk(dir, ['fetch', remote])
+    return result.ok ? ok() : result
+  }
+
+  async rebase(dir: string, onto: string): Promise<Result<void>> {
+    const result = await this.gitOk(dir, ['rebase', onto])
+    if (result.ok) return ok()
+    // Conflito ou qualquer outra falha: nunca deixa a working tree no meio de
+    // um rebase — o próximo comando (push, novo commit, outro worktree lendo
+    // este dir) encontraria marcadores de conflito e um estado inconsistente.
+    await this.git(dir, ['rebase', '--abort'])
+    return result
   }
 }
 

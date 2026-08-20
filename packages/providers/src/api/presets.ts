@@ -18,7 +18,28 @@ export interface PresetDeps {
   readonly baseUrl?: string
   readonly temperature?: number
   readonly requestTimeoutMs?: number
+  /**
+   * Janela REAL do servidor, em tokens.
+   *
+   * Existe porque em servidor local a janela não é propriedade do modelo, é
+   * propriedade de como o servidor foi iniciado. O Ollama, por exemplo, ignora
+   * a janela nominal do modelo e usa `num_ctx` — 4096 por padrão na maioria das
+   * máquinas — e, ao estourar, **descarta os tokens mais antigos sem erro**.
+   * Declarar menos do que o servidor aguenta custa contexto; declarar mais
+   * custa correção, em silêncio. Por isso o default aqui é conservador.
+   */
+  readonly contextLength?: number
 }
+
+/**
+ * Janela padrão assumida para servidor local.
+ *
+ * Deliberadamente igual ao default do Ollama (4096) e não à janela nominal do
+ * modelo: o número que importa é o do servidor. Quem subiu o servidor com
+ * `OLLAMA_CONTEXT_LENGTH` maior declara `contextLength` na config e recupera o
+ * espaço — uma linha, e agora explícita.
+ */
+const LOCAL_DEFAULT_CONTEXT = 4_096
 
 // ── Modelos locais ──────────────────────────────────────────────────────────
 
@@ -26,12 +47,17 @@ export interface PresetDeps {
  * Ollama — `ollama serve` na porta 11434.
  *
  * Três ajustes existem por razões concretas de modelo local:
- *  - `maxContextTokens` conservador: a maioria dos modelos locais roda com
- *    janela bem menor que a nominal, e estourá-la trunca silenciosamente o
- *    prompt — o pior modo de falha possível, porque parece que funcionou.
+ *  - `maxContextTokens` = `num_ctx` do servidor (ver `LOCAL_DEFAULT_CONTEXT`),
+ *    não a janela nominal do modelo. Estourar o `num_ctx` não dá erro: o
+ *    Ollama descarta o excedente e responde — o pior modo de falha possível,
+ *    porque parece que funcionou.
  *  - Timeout longo: a primeira chamada carrega os pesos na memória.
  *  - `structuredOutput: true` porque o Ollama suporta `format: json`; a
  *    conformidade real continua sendo garantida pelo SchemaCheck (INV-2).
+ *
+ * O modelo NÃO precisa saber editar arquivos por conta própria: quem edita é o
+ * Uranus, via `DEFAULT_FILE_TOOLS`. O requisito real é function calling —
+ * `health()` sonda isso e falha explicitamente quando falta.
  */
 export function ollamaProvider(deps: PresetDeps): ApiProvider {
   return new ApiProvider({
@@ -44,7 +70,7 @@ export function ollamaProvider(deps: PresetDeps): ApiProvider {
     requestTimeoutMs: deps.requestTimeoutMs ?? 600_000,
     temperature: deps.temperature ?? 0.1,
     capabilities: {
-      maxContextTokens: 32_768,
+      maxContextTokens: deps.contextLength ?? LOCAL_DEFAULT_CONTEXT,
       maxConcurrentSessions: 1, // GPU única: paralelismo só piora a latência
     },
     // Sem `pricing`: o custo em dinheiro é zero e o BudgetGuard passa a
@@ -63,7 +89,10 @@ export function lmStudioProvider(deps: PresetDeps): ApiProvider {
     logger: deps.logger,
     requestTimeoutMs: deps.requestTimeoutMs ?? 600_000,
     temperature: deps.temperature ?? 0.1,
-    capabilities: { maxContextTokens: 32_768, maxConcurrentSessions: 1 },
+    capabilities: {
+      maxContextTokens: deps.contextLength ?? LOCAL_DEFAULT_CONTEXT,
+      maxConcurrentSessions: 1,
+    },
   })
 }
 
@@ -79,7 +108,10 @@ export function localProvider(deps: PresetDeps & { readonly baseUrl: string }): 
     logger: deps.logger,
     requestTimeoutMs: deps.requestTimeoutMs ?? 600_000,
     temperature: deps.temperature ?? 0.1,
-    capabilities: { maxContextTokens: 32_768, maxConcurrentSessions: 1 },
+    capabilities: {
+      maxContextTokens: deps.contextLength ?? LOCAL_DEFAULT_CONTEXT,
+      maxConcurrentSessions: 1,
+    },
   })
 }
 
@@ -199,10 +231,14 @@ export function isPresetName(value: string): value is PresetName {
 export function presetCapabilities(name: PresetName): Partial<ProviderCapabilities> {
   const isLocal = name === 'ollama' || name === 'lmstudio' || name === 'local'
   return {
+    // `false` não é limitação: significa que quem edita é o Uranus, via as
+    // ferramentas de `file-tools.ts`, com permissão checada a cada chamada.
+    // Um modelo sem nenhuma habilidade agêntica própria edita arquivos por
+    // aqui — só precisa suportar function calling.
     nativeFileEditing: false,
     toolUse: true,
     structuredOutput: true,
-    maxContextTokens: isLocal ? 32_768 : 128_000,
+    maxContextTokens: isLocal ? LOCAL_DEFAULT_CONTEXT : 128_000,
     maxConcurrentSessions: isLocal ? 1 : 4,
   }
 }

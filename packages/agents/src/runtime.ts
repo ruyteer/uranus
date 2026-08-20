@@ -12,6 +12,7 @@ import type {
   SessionRequest,
 } from '@uranus/core'
 import { ProviderError, intersectPermissions, unwrap } from '@uranus/core'
+import type { SessionLimiter } from './session-limiter.js'
 
 export interface DefaultAgentRuntimeOptions {
   readonly prompts: PromptRegistry
@@ -26,6 +27,13 @@ export interface DefaultAgentRuntimeOptions {
    * um esquecido só quando a fatura não fechasse.
    */
   readonly events?: EventBus
+  /**
+   * Limita sessões simultâneas por provider (`ProviderCapabilities.maxConcurrentSessions`,
+   * Fase 9). Sem isto, `createSession()` nunca respeita esse limite — um
+   * provider local de GPU única pode receber N sessões de uma vez sob
+   * execução concorrente.
+   */
+  readonly sessions?: SessionLimiter
 }
 
 /**
@@ -40,12 +48,14 @@ export class DefaultAgentRuntime implements AgentRuntime {
   private readonly registry: AgentRegistry
   private readonly logger: Logger
   private readonly events: EventBus | undefined
+  private readonly sessions: SessionLimiter | undefined
 
   constructor(options: DefaultAgentRuntimeOptions) {
     this.prompts = options.prompts
     this.registry = options.registry
     this.logger = options.logger.child({ component: 'agent-runtime' })
     this.events = options.events
+    this.sessions = options.sessions
   }
 
   async run(spec: AgentSpec, context: AgentRunContext, signal: AbortSignal): Promise<AgentOutput> {
@@ -53,7 +63,16 @@ export class DefaultAgentRuntime implements AgentRuntime {
     const prepared = hooks?.beforeRun !== undefined ? await hooks.beforeRun(context) : context
 
     const request = this.buildRequest(spec, prepared)
-    const session = await prepared.provider.createSession(request, signal)
+    const { provider } = prepared
+    const session =
+      this.sessions === undefined
+        ? await provider.createSession(request, signal)
+        : await this.sessions.run(
+            provider.id,
+            provider.capabilities.maxConcurrentSessions,
+            () => provider.createSession(request, signal),
+            signal,
+          )
 
     await this.events?.emit(
       'AgentRunStarted',
@@ -68,13 +87,30 @@ export class DefaultAgentRuntime implements AgentRuntime {
       { actor: { type: 'agent', name: spec.name }, taskId: prepared.task.id },
     )
 
-    // Drena o stream (eventos de progresso vão para log; o resultado é o que conta).
+    // Drena o stream. Delta de texto/thinking não vira evento (R15: um run
+    // longo geraria centenas de milhares e o event store deixaria de ser
+    // auditável) — mas `tool_call` é grosso o bastante (poucas dezenas por
+    // attempt) pra ser sinal útil de "o que o agente está fazendo agora",
+    // sem estourar o log.
     for await (const event of session.stream()) {
       if (event.type === 'warning') {
         this.logger.warn('Aviso do provider', { message: event.message })
       }
       if (event.type === 'error') {
         this.logger.error('Erro do provider durante a sessão', { error: event.error })
+      }
+      if (event.type === 'tool_call') {
+        const detail = summarizeToolInput(event.call.name, event.call.input)
+        await this.events?.emit(
+          'ToolCalled',
+          {
+            sessionId: session.id,
+            tool: event.call.name,
+            callId: event.call.id,
+            ...(detail === undefined ? {} : { detail }),
+          },
+          { actor: { type: 'agent', name: spec.name }, taskId: prepared.task.id },
+        )
       }
       if (signal.aborted) {
         await session.interrupt('abortado pelo kernel')
@@ -205,6 +241,30 @@ function describeContract(checks: readonly Check[]): string {
       }
     })
     .join('\n')
+}
+
+/** Resumo curto de `ToolCall.input` pras ferramentas mais comuns — o resto some. */
+function summarizeToolInput(name: string, input: unknown): string | undefined {
+  if (input === null || typeof input !== 'object') return undefined
+  const rec = input as Record<string, unknown>
+
+  switch (name) {
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'NotebookEdit':
+      return typeof rec['file_path'] === 'string' ? rec['file_path'] : undefined
+    case 'Bash':
+      return typeof rec['command'] === 'string' ? rec['command'].slice(0, 120) : undefined
+    case 'Grep':
+    case 'Glob':
+      return typeof rec['pattern'] === 'string' ? rec['pattern'] : undefined
+    case 'WebFetch':
+      return typeof rec['url'] === 'string' ? rec['url'] : undefined
+    default:
+      return undefined
+  }
 }
 
 function renderFailureContext(prompts: PromptRegistry, context: AgentRunContext): string {

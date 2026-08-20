@@ -30,6 +30,7 @@
     "yaml": "^2.6.0"
   },
   "devDependencies": {
+    "@uranus/events": "workspace:*",
     "@uranus/testkit": "workspace:*"
   }
 }

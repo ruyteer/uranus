@@ -88,6 +88,7 @@ export async function registerConfiguredProviders(
         ...(entry.requestTimeoutMs === undefined
           ? {}
           : { requestTimeoutMs: entry.requestTimeoutMs }),
+        ...(entry.contextLength === undefined ? {} : { contextLength: entry.contextLength }),
       })
       registry.register(provider)
       logger.debug('Provider registrado', { provider: provider.id, preset: presetName })

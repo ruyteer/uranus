@@ -9,6 +9,7 @@ import {
   OtlpMetricsExporter,
 } from '@uranus/telemetry'
 import type { ModelPricing } from '@uranus/core'
+import type { DashboardData } from './data.js'
 import { DashboardServer, type DashboardControl } from './server.js'
 import { SseHub } from './sse.js'
 
@@ -19,6 +20,8 @@ export interface StartDashboardOptions {
   readonly budget?: BudgetGuard
   readonly humanGate?: HumanGate
   readonly control?: DashboardControl
+  /** Porta de CRUD. Ausente = painel somente-leitura (ver `DashboardOptions`). */
+  readonly data?: DashboardData
   readonly port?: number
   readonly host?: string
   readonly token?: string
@@ -83,6 +86,7 @@ export async function startDashboard(options: StartDashboardOptions): Promise<Ru
       clock: options.clock,
       ...(options.humanGate === undefined ? {} : { humanGate: options.humanGate }),
       ...(options.control === undefined ? {} : { control: options.control }),
+      ...(options.data === undefined ? {} : { data: options.data }),
       ...(options.port === undefined ? {} : { port: options.port }),
       ...(options.host === undefined ? {} : { host: options.host }),
       ...(options.token === undefined ? {} : { token: options.token }),

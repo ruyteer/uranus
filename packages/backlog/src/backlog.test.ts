@@ -1,12 +1,19 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { ProjectId } from '@uranus/core'
+import type { ProjectId, TaskState } from '@uranus/core'
 import { silentLogger, unwrap } from '@uranus/core'
-import { withTempDir } from '@uranus/testkit'
+import { makeTask, withTempDir } from '@uranus/testkit'
 import { parseMarkdownBacklog } from './markdown-source.js'
 import { validatePlan, topologicalSort, type PlanValidationOptions } from './plan-validator.js'
 import type { PlannerOutput, PlannerTask } from './plan-schema.js'
+import { backlogProgress } from './progress.js'
 import { FileBacklogStore } from './store.js'
+import {
+  createCrossProjectItem,
+  crossProjectBacklogDir,
+  crossProjectExternalRef,
+  resolveInsideRoot,
+} from './cross-project.js'
 
 const PROJECT_ID = 'prj_01HZZZZZZZZZZZZZZZZZZZZZZZ' as ProjectId
 
@@ -301,6 +308,140 @@ describe('validatePlan — o modelo propõe, o validador dispõe (ADR-002)', () 
   })
 })
 
+describe('validatePlan — trabalho declarado em projetos vizinhos (categoria ④)', () => {
+  const COM_VIZINHO: PlanValidationOptions = { ...OPTIONS, writableProjects: ['api', 'core'] }
+
+  const pedido = {
+    project: 'api',
+    title: 'Expor GET /health com status das dependências',
+    intent:
+      'O front precisa de um endpoint que responda 200 com o status do banco e da fila, para exibir o painel de saúde.',
+  }
+
+  it('campo ausente é o caso comum e não muda nada', () => {
+    const validated = unwrap(validatePlan(plan([task()]), COM_VIZINHO))
+    expect(validated.crossProject).toEqual([])
+  })
+
+  it('aceita alias gravável e NÃO transforma o pedido em task deste projeto', () => {
+    const validated = unwrap(
+      validatePlan({ ...plan([task()]), crossProject: [pedido] }, COM_VIZINHO),
+    )
+    // A prova do pedido inteiro: uma task local, o pedido do vizinho à parte.
+    expect(validated.drafts).toHaveLength(1)
+    expect(validated.crossProject).toEqual([pedido])
+  })
+
+  it('alias desconhecido REJEITA o plano — nunca é descartado em silêncio', () => {
+    const result = validatePlan(
+      { ...plan([task()]), crossProject: [{ ...pedido, project: 'mobile' }] },
+      COM_VIZINHO,
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const rejection = result.error.find((r) => r.code === 'unknown-cross-project')
+      expect(rejection).toBeDefined()
+      expect(rejection?.message).toContain('mobile')
+      // A mensagem lista o que existe: é o que o Planner precisa pra corrigir.
+      expect(rejection?.message).toContain('api')
+    }
+  })
+
+  it('sem vizinho gravável, qualquer crossProject é rejeitado', () => {
+    // `OPTIONS` não declara `writableProjects` — é o projeto que nunca ouviu
+    // falar desta opção, e que por isso não escreve no repo de ninguém.
+    const result = validatePlan({ ...plan([task()]), crossProject: [pedido] }, OPTIONS)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error[0]!.code).toBe('unknown-cross-project')
+      expect(result.error[0]!.message).toContain('permissão')
+    }
+  })
+
+  it('rejeita tipo desconhecido num item cross-project', () => {
+    const result = validatePlan(
+      { ...plan([task()]), crossProject: [{ ...pedido, kind: 'teleportar' }] },
+      COM_VIZINHO,
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.some((r) => r.code === 'invalid-task-kind')).toBe(true)
+  })
+})
+
+describe('escrita no backlog do vizinho (categoria ④)', () => {
+  const ORIGEM = {
+    originProjectName: 'frontend',
+    originItemId: 'painel-de-saude-abc123',
+    title: 'Expor GET /health com status das dependências',
+    intent: 'O front precisa de um endpoint que responda 200 com o status do banco e da fila.',
+  }
+
+  it('externalRef é determinístico e distingue necessidades diferentes', () => {
+    expect(crossProjectExternalRef(ORIGEM)).toBe(crossProjectExternalRef({ ...ORIGEM }))
+    expect(crossProjectExternalRef(ORIGEM)).toContain('uranus:frontend:painel-de-saude-abc123')
+    expect(crossProjectExternalRef({ ...ORIGEM, title: 'Outra coisa completamente' })).not.toBe(
+      crossProjectExternalRef(ORIGEM),
+    )
+  })
+
+  it('guarda de caminho: nada escreve fora da raiz declarada do vizinho', () => {
+    const raiz = resolve('projetos', 'api')
+
+    const dentro = crossProjectBacklogDir(raiz)
+    expect(dentro.ok).toBe(true)
+    if (dentro.ok) expect(dentro.value).toBe(join(raiz, '.uranus', 'backlog'))
+
+    // O alias vem de saída de modelo: "sair do diretório" é exatamente o que
+    // uma injeção tentaria, e aqui isso é erro, não escrita.
+    const fora = resolveInsideRoot(raiz, '..', '..', 'etc', 'passwd')
+    expect(fora.ok).toBe(false)
+    if (!fora.ok) expect(fora.error.message).toContain('sai da raiz')
+
+    // Caminho absoluto também não escapa: `resolve` o adotaria inteiro.
+    expect(resolveInsideRoot(raiz, resolve('projetos', 'outro')).ok).toBe(false)
+  })
+
+  it('cria o item no vizinho explicando de onde veio', async () => {
+    await withTempDir(async (dir) => {
+      const store = new FileBacklogStore({
+        dir: unwrap(crossProjectBacklogDir(dir)),
+        projectId: PROJECT_ID,
+        logger: silentLogger,
+      })
+
+      const criado = unwrap(await createCrossProjectItem(store, ORIGEM, 1_700_000_000_000))
+      expect(criado.created).toBe(true)
+
+      const item = await store.get(criado.itemId)
+      expect(item?.source).toBe('linked-project')
+      expect(item?.labels).toContain('cross-project')
+      // Item sem origem no corpo é ruído no backlog alheio, não integração.
+      expect(item?.body).toContain('frontend')
+      expect(item?.body).toContain(ORIGEM.originItemId)
+      expect(item?.body).toContain('status do banco')
+    })
+  })
+
+  it('planejar o mesmo item duas vezes cria UM item no vizinho', async () => {
+    await withTempDir(async (dir) => {
+      const store = new FileBacklogStore({
+        dir: unwrap(crossProjectBacklogDir(dir)),
+        projectId: PROJECT_ID,
+        logger: silentLogger,
+      })
+
+      const primeira = unwrap(await createCrossProjectItem(store, ORIGEM, 1_700_000_000_000))
+      // Relógio diferente de propósito: o `externalRef` não pode depender dele,
+      // ou o replanejamento criaria um item novo a cada tentativa.
+      const segunda = unwrap(await createCrossProjectItem(store, ORIGEM, 1_700_000_009_999))
+
+      expect(segunda.created).toBe(false)
+      expect(segunda.itemId).toBe(primeira.itemId)
+      expect(await store.list()).toHaveLength(1)
+    })
+  })
+})
+
 describe('topologicalSort', () => {
   it('ordena dependências antes dos dependentes', () => {
     const sorted = topologicalSort([
@@ -426,5 +567,120 @@ describe('FileBacklogStore', () => {
       const items = await store.list()
       expect(items).toHaveLength(1)
     })
+  })
+
+  it('planningFailures e startedAt sobrevivem ao round-trip YAML', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const item = unwrap(await store.add({ title: 'Refatorar', body: '', createdAt: 1 }))
+
+      unwrap(
+        await store.update({
+          ...item,
+          state: 'planned',
+          planId: 'pln_x',
+          planningFailures: 2,
+          startedAt: 1_700_000_000_000,
+          lastRejections: ['escopo amplo demais'],
+        }),
+      )
+
+      const found = await makeStore(dir).get(item.id)
+      expect(found).toMatchObject({
+        state: 'planned',
+        planId: 'pln_x',
+        planningFailures: 2,
+        startedAt: 1_700_000_000_000,
+        lastRejections: ['escopo amplo demais'],
+      })
+    })
+  })
+
+  it('não grava planningFailures quando é zero ou ausente', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const item = unwrap(await store.add({ title: 'Sem falha', body: '', createdAt: 1 }))
+      unwrap(await store.update({ ...item, planningFailures: 0 }))
+
+      const { readFile } = await import('node:fs/promises')
+      const raw = await readFile(join(dir, '.uranus', 'backlog', `${item.id}.yaml`), 'utf8')
+      expect(raw).not.toContain('planningFailures')
+      expect((await store.get(item.id))?.planningFailures).toBeUndefined()
+    })
+  })
+
+  it('lê YAML antigo, sem os campos novos, sem inventar valores', async () => {
+    await withTempDir(async (dir) => {
+      const { writeFile, mkdir } = await import('node:fs/promises')
+      await mkdir(join(dir, '.uranus', 'backlog'), { recursive: true })
+      await writeFile(
+        join(dir, '.uranus', 'backlog', 'antigo.yaml'),
+        'title: Item antigo\nbody: escrito antes dos campos novos\npriority: 70\nstate: open\ncreatedAt: 5\n',
+      )
+
+      const found = await makeStore(dir).get('antigo')
+      expect(found?.title).toBe('Item antigo')
+      expect(found?.priority).toBe(70)
+      expect(found?.planningFailures).toBeUndefined()
+      expect(found?.startedAt).toBeUndefined()
+    })
+  })
+})
+
+describe('backlogProgress', () => {
+  function tasks(...states: readonly TaskState[]) {
+    return states.map((state) => makeTask({ state }))
+  }
+
+  it('item sem task nenhuma não está completo — está quebrado', () => {
+    // Plano que não gerou task é falha de planejamento; marcar `done` aqui
+    // esconderia exatamente o que o humano precisa ver.
+    expect(backlogProgress([])).toEqual({
+      total: 0,
+      done: 0,
+      blocked: 0,
+      active: 0,
+      queued: 0,
+      complete: false,
+    })
+  })
+
+  it('conta parcial e não completa enquanto houver task viva', () => {
+    const progress = backlogProgress(tasks('done', 'running', 'ready', 'failed'))
+    expect(progress).toEqual({
+      total: 4,
+      done: 1,
+      blocked: 0,
+      active: 1,
+      // `failed` volta para a fila: é fila, não parada.
+      queued: 2,
+      complete: false,
+    })
+  })
+
+  it('completa quando todas terminam e ao menos uma concluiu', () => {
+    const progress = backlogProgress(tasks('done', 'done', 'abandoned'))
+    expect(progress.done).toBe(2)
+    expect(progress.complete).toBe(true)
+  })
+
+  it('todas abandonadas não é conclusão', () => {
+    expect(backlogProgress(tasks('abandoned', 'abandoned')).complete).toBe(false)
+  })
+
+  it('uma bloqueada segura o item inteiro', () => {
+    const progress = backlogProgress(tasks('done', 'done', 'blocked'))
+    expect(progress.blocked).toBe(1)
+    expect(progress.complete).toBe(false)
+  })
+
+  it('os contadores particionam o total', () => {
+    const progress = backlogProgress(
+      tasks('done', 'abandoned', 'blocked', 'verifying', 'draft', 'integrating'),
+    )
+    const abandoned = 1
+    expect(progress.done + abandoned + progress.blocked + progress.active + progress.queued).toBe(
+      progress.total,
+    )
   })
 })

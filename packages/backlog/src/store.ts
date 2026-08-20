@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { BacklogItem, Logger, ProjectId, Result } from '@uranus/core'
@@ -19,6 +19,16 @@ export interface StoredBacklogItem extends BacklogItem {
   readonly planId?: string
   /** Rejeições da última tentativa de planejamento, para o humano ler. */
   readonly lastRejections?: readonly string[]
+  /**
+   * Quantas vezes o plano deste item já foi recusado pelo validador.
+   *
+   * É o que exclui o item do planejamento automático ao bater
+   * `backlog.maxPlanningFailures` — sem estado novo, porque `state` continua
+   * `open` e o humano continua podendo rodar `uranus plan` na mão.
+   */
+  readonly planningFailures?: number
+  /** Quando o item virou `planned`. Base da duração em `BacklogItemCompleted`. */
+  readonly startedAt?: number
 }
 
 /**
@@ -95,6 +105,28 @@ export class FileBacklogStore {
     return written.ok ? ok() : err(written.error)
   }
 
+  /**
+   * Apaga o item do disco.
+   *
+   * Item inexistente é sucesso, não erro: a operação é idempotente porque o
+   * chamador quer o estado final ("não existe mais"), e um segundo `remove`
+   * vindo de dois cliques no painel não é falha. O histórico do que aconteceu
+   * com o item vive no log de eventos, não neste arquivo.
+   */
+  async remove(id: string): Promise<Result<void>> {
+    try {
+      await rm(join(this.dir, `${id}.yaml`), { force: true })
+      return ok()
+    } catch (error: unknown) {
+      return err(
+        new ValidationError('Falha ao apagar item de backlog', {
+          cause: error,
+          context: { id },
+        }),
+      )
+    }
+  }
+
   /** Importa itens externos, pulando os que já existem (idempotente). */
   async importItems(
     items: readonly {
@@ -129,8 +161,14 @@ export class FileBacklogStore {
   private async write(item: StoredBacklogItem): Promise<Result<StoredBacklogItem>> {
     try {
       await mkdir(this.dir, { recursive: true })
-      const { id: _id, projectId: _projectId, ...rest } = item
-      await writeFile(join(this.dir, `${item.id}.yaml`), stringifyYaml(rest))
+      const { id: _id, projectId: _projectId, planningFailures, ...rest } = item
+      // Zero é o valor neutro: gravá-lo encheria de ruído os itens que nunca
+      // falharam — e o YAML aqui é feito para o humano ler e editar à mão.
+      const payload = {
+        ...rest,
+        ...(planningFailures === undefined || planningFailures === 0 ? {} : { planningFailures }),
+      }
+      await writeFile(join(this.dir, `${item.id}.yaml`), stringifyYaml(payload))
       return ok(item)
     } catch (error: unknown) {
       return err(
@@ -180,6 +218,10 @@ export class FileBacklogStore {
       ...(Array.isArray(data['lastRejections'])
         ? { lastRejections: (data['lastRejections'] as string[]).map(String) }
         : {}),
+      ...(typeof data['planningFailures'] === 'number'
+        ? { planningFailures: data['planningFailures'] }
+        : {}),
+      ...(typeof data['startedAt'] === 'number' ? { startedAt: data['startedAt'] } : {}),
     }
   }
 }

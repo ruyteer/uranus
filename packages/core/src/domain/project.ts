@@ -67,14 +67,23 @@ export interface QueueStats {
   readonly deadLettered: number
 }
 
+export interface KernelWorkerStatus {
+  readonly taskId: TaskId
+  readonly agent: string
+  readonly phase: TickPhase
+}
+
 export interface KernelStatus {
   readonly runId?: RunId
   readonly state: 'idle' | 'running' | 'paused' | 'stopping' | 'recovering'
   readonly phase: TickPhase
+  /** Compat: só preenchido quando exatamente 1 task está em voo. */
   readonly currentTask?: TaskId
   readonly currentAgent?: string
   readonly tick: number
   readonly startedAt?: number
   readonly budget: BudgetState
   readonly queue: QueueStats
+  /** Todas as tasks em voo agora, uma por worker (R6: Fase 9). */
+  readonly workers: readonly KernelWorkerStatus[]
 }

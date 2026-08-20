@@ -4,7 +4,13 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import type { EventName, EventQuery, EventStore, UranusEvent } from '@uranus/core'
 import { IoError, tryParseJson } from '@uranus/core'
-import { listSegments, segmentFilename, segmentIndexFor, type SegmentRef } from './segments.js'
+import {
+  listSegments,
+  pruneSegments,
+  segmentFilename,
+  segmentIndexFor,
+  type SegmentRef,
+} from './segments.js'
 
 export interface JsonlEventStoreOptions {
   readonly dir: string
@@ -156,6 +162,23 @@ export class JsonlEventStore implements EventStore {
   /** Durabilidade explícita. Chamado pelo kernel antes de cada checkpoint. */
   flush(): void {
     if (this.fd !== undefined) this.flushSync()
+  }
+
+  /**
+   * Apaga segmentos além dos últimos `keep`. O segmento atual nunca é
+   * apagado. Seguro por construção: recovery só precisa do log desde o
+   * último checkpoint válido do run corrente, e o default de `keep` (200
+   * segmentos) é generoso o bastante pra nunca alcançar esse ponto na
+   * prática — é uma válvula de segurança pra runs muito longos, não uma
+   * poda agressiva.
+   */
+  async prune(keep: number): Promise<number> {
+    await this.init()
+    const deleted = await pruneSegments(this.dir, { keep })
+    if (deleted.length === 0) return 0
+    const deletedPaths = new Set(deleted.map((s) => s.path))
+    this.segments = this.segments.filter((s) => !deletedPaths.has(s.path))
+    return deleted.length
   }
 
   async close(): Promise<void> {

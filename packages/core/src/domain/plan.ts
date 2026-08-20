@@ -33,6 +33,15 @@ export type PlanRejectionCode =
   | 'paths-out-of-scope'
   | 'invalid-task-kind'
   | 'schema-mismatch'
+  /**
+   * O plano declarou trabalho para um projeto vizinho que não existe, ou que
+   * não deu permissão de escrita no backlog.
+   *
+   * É rejeição, e não descarte silencioso: o alias vem de saída de modelo, e
+   * aceitar o plano ignorando a metade cross-project faria o Uranus dizer
+   * "planejei" tendo jogado fora justamente a parte que depende do vizinho.
+   */
+  | 'unknown-cross-project'
 
 export interface PlanRejection {
   readonly code: PlanRejectionCode
@@ -48,7 +57,13 @@ export interface BacklogItem {
   readonly body: string
   readonly labels: readonly string[]
   readonly priority: number
-  readonly source: 'file' | 'github' | 'gitlab' | 'linear' | 'manual'
+  /**
+   * `review`: achado de gate que a política não promoveu a task automática.
+   * `linked-project`: criado pelo Uranus de um projeto vizinho (categoria ④) —
+   * é o que faz `uranus backlog list` mostrar "isto veio do frontend" em vez
+   * de um item órfão que ninguém sabe de onde saiu.
+   */
+  readonly source: 'file' | 'github' | 'gitlab' | 'linear' | 'manual' | 'review' | 'linked-project'
   readonly externalRef?: string
   readonly createdAt: number
 }

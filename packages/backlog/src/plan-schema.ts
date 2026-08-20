@@ -21,6 +21,48 @@ export const PLAN_OUTPUT_SCHEMA: JsonSchema = Object.freeze({
     rationale: { type: 'string', minLength: 20, maxLength: 4000 },
     risks: { type: 'array', items: { type: 'string', maxLength: 500 }, maxItems: 10 },
     assumptions: { type: 'array', items: { type: 'string', maxLength: 500 }, maxItems: 10 },
+    /**
+     * Trabalho que este item exige de um projeto VIZINHO (categoria ④).
+     *
+     * Não vira task na fila deste projeto: vira item de backlog no vizinho,
+     * que o Planner de lá decompõe quando rodar. Por isso não pede `touches`
+     * nem `acceptance` — exigir aqui seria este projeto legislando sobre a
+     * estrutura de arquivos e o modo de verificar do outro.
+     *
+     * Só é aceito para os aliases que o projeto declarou com
+     * `backlogWrite: true`; qualquer outro é plano rejeitado.
+     */
+    crossProject: {
+      type: 'array',
+      maxItems: 6,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['project', 'title', 'intent'],
+        properties: {
+          /** Alias do vizinho, exatamente como listado no prompt. */
+          project: { type: 'string', minLength: 1, maxLength: 60 },
+          title: { type: 'string', minLength: 5, maxLength: 120 },
+          intent: { type: 'string', minLength: 20, maxLength: 4000 },
+          kind: {
+            type: 'string',
+            enum: [
+              'feature',
+              'bugfix',
+              'refactor',
+              'test',
+              'docs',
+              'chore',
+              'security',
+              'perf',
+              'deps',
+              'infra',
+              'migration',
+            ],
+          },
+        },
+      },
+    },
     tasks: {
       type: 'array',
       minItems: 1,
@@ -144,6 +186,16 @@ export interface PlannerOutput {
   readonly risks?: readonly string[]
   readonly assumptions?: readonly string[]
   readonly tasks: readonly PlannerTask[]
+  readonly crossProject?: readonly PlannerCrossProjectItem[]
+}
+
+/** Necessidade declarada num projeto vizinho. Vira item de backlog LÁ, não task aqui. */
+export interface PlannerCrossProjectItem {
+  /** Alias do vizinho, entre os que têm `backlogWrite: true`. */
+  readonly project: string
+  readonly title: string
+  readonly intent: string
+  readonly kind?: string
 }
 
 export interface PlannerTask {

@@ -17,9 +17,11 @@ import type { CheckResult, Diagnosis, Verification } from './verification.js'
 import type { DiffSummary, PullRequestRef } from './vcs.js'
 import type { MemoryScope } from './memory.js'
 import type { PlanRejection } from './plan.js'
+import type { DeferralReason } from './review.js'
 import type { TaskKind, TaskState } from './task.js'
 import type { TickPhase } from './project.js'
 import type { Money, TokenUsage } from './usage.js'
+import type { ValidationRule } from './validation.js'
 
 /**
  * Catálogo de eventos — INV-3: "todo efeito colateral é um evento; sem evento,
@@ -60,6 +62,38 @@ export interface EventPayloads {
   BacklogItemCreated: { itemId: string; title: string }
   PlanCreated: { planId: PlanId; sourceItemId: string; tasks: number }
   PlanRejected: { sourceItemId: string; rejections: readonly PlanRejection[] }
+  /** Item que o `uranus start` planejou sozinho, sem `uranus plan`. */
+  BacklogItemPlanned: { itemId: string; planId: PlanId; tasks: number }
+  /**
+   * Tentativa automática de planejar um item que o validador recusou.
+   *
+   * Distinto de `PlanRejected`, que registra a recusa em si: aqui o que
+   * interessa é `failures` — o contador acumulado que, ao bater o teto de
+   * `backlog.maxPlanningFailures`, tira o item da fila automática. Sem esse
+   * número no log, "o Uranus desistiu deste item" seria indistinguível de "o
+   * Uranus nunca chegou neste item".
+   */
+  BacklogItemPlanningFailed: {
+    itemId: string
+    failures: number
+    rejections: readonly PlanRejection[]
+  }
+  /** Todas as tasks do item terminaram e ao menos uma concluiu; item vira `done`. */
+  BacklogItemCompleted: { itemId: string; tasks: number; durationMs: number }
+  /**
+   * Este projeto criou um item no backlog de um projeto vizinho (categoria ④).
+   *
+   * `itemId` é o id do item **no vizinho**; `originItemId`, o item daqui que
+   * originou o pedido. Escrever no repositório de outro projeto é a única
+   * coisa que o Uranus faz fora da própria fronteira — precisa ficar no log
+   * com os dois lados nomeados, ou "quem criou isto?" vira arqueologia.
+   */
+  CrossProjectItemCreated: {
+    project: string
+    itemId: string
+    originItemId: string
+    title: string
+  }
 
   // ── Tarefas ───────────────────────────────────────────────────────────────
   TaskCreated: { taskId: TaskId; kind: TaskKind; title: string; planId?: PlanId }
@@ -72,6 +106,20 @@ export interface EventPayloads {
   TaskCompleted: { taskId: TaskId; attempts: number; totalCost: Money }
   TaskFailed: { taskId: TaskId; attemptId: AttemptId; diagnosis: Diagnosis }
   TaskRetried: { taskId: TaskId; attempt: number; reason: string }
+  /**
+   * Falha de validação encaminhada para reparo dirigido.
+   *
+   * Distinto de `TaskRetried` de propósito: reparo não gasta tentativa, não
+   * replaneja e não deriva task nova — a mesma task volta para `ready` com os
+   * problemas concretos em mãos. Sem um evento próprio, "o Uranus consertou
+   * sozinho" e "o Uranus tentou de novo às cegas" ficariam indistinguíveis no
+   * log, e `repairAttempts` seria um contador sem rastro que o explique.
+   */
+  TaskRepairScheduled: {
+    taskId: TaskId
+    rules: readonly ValidationRule[]
+    repairAttempt: number
+  }
   TaskReplanned: { taskId: TaskId; reason: string }
   TaskAbandoned: { taskId: TaskId; reason: string }
 
@@ -91,7 +139,8 @@ export interface EventPayloads {
     usage: TokenUsage
     cost: Money
   }
-  ToolCalled: { sessionId: SessionId; tool: string; callId: string }
+  /** `detail` é um resumo curto e legível do argumento (ex.: caminho de arquivo, comando). */
+  ToolCalled: { sessionId: SessionId; tool: string; callId: string; detail?: string }
   ToolResultReceived: { sessionId: SessionId; callId: string; ok: boolean; summary: string }
   ToolDenied: { sessionId: SessionId; tool: string; reason: string }
 
@@ -105,6 +154,23 @@ export interface EventPayloads {
   BugDetected: { taskId?: TaskId; title: string; severity: string; evidence: string }
   SecurityFindingRaised: { taskId?: TaskId; title: string; severity: string; path?: string }
   ReviewCompleted: { taskId: TaskId; verdict: string; findings: number; blocking: number }
+  /**
+   * Achado que a política recusou como trabalho automático (ver `planFollowUps`).
+   *
+   * Existe para tornar a contenção auditável: sem ele, "o Uranus parou de
+   * criar tasks" e "o Uranus parou de achar problemas" seriam indistinguíveis
+   * no log — e a primeira vez que alguém suspeitasse do teto, não teria como
+   * verificar o que foi cortado nem por quê.
+   */
+  FindingDeferred: {
+    taskId: TaskId
+    agent: string
+    reason: DeferralReason
+    severity: string
+    category: string
+    title: string
+    fingerprint: string
+  }
 
   // ── Sandbox e VCS ─────────────────────────────────────────────────────────
   WorkspaceCreated: { workspaceId: WorkspaceId; taskId: TaskId; branch: string; rootDir: string }

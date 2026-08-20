@@ -1,9 +1,20 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
-import type { ContextPack, Provider, ProviderEvent } from '@uranus/core'
+import type {
+  ContextPack,
+  Provider,
+  ProviderEvent,
+  SessionRequest,
+  ShellCommand,
+  ShellProcess,
+  ShellResult,
+  ShellRunner,
+} from '@uranus/core'
+import { silentLogger } from '@uranus/core'
 import { DefaultProviderRegistry } from './registry.js'
 import { renderContextPack } from './render-context.js'
 import { parseClaudeLine, toTokenUsage, type StreamParseState } from './claude-code/stream.js'
-import { mapPermissionsToTools } from './claude-code/provider.js'
+import { ClaudeCodeProvider, mapPermissionsToTools } from './claude-code/provider.js'
 
 function fakeProvider(id: string, structured = false): Provider {
   return {
@@ -284,5 +295,169 @@ describe('mapPermissionsToTools', () => {
     expect(tools).toContain('Bash(pnpm test)')
     expect(tools).toContain('Bash(git status)')
     expect(tools).toContain('WebFetch')
+  })
+
+  it('Skill: curinga em tools.allow libera, sem depender de fs/exec/network', () => {
+    const tools = mapPermissionsToTools({
+      ...base,
+      permissions: {
+        tools: { allow: ['*'], deny: [] },
+        fs: { read: ['**'], write: [], deny: [] },
+        network: false,
+        exec: false,
+        secrets: { allow: [] },
+      },
+    })
+    expect(tools).toContain('Skill')
+  })
+
+  it('Skill: lista explícita sem "Skill" não libera (agente read-only, ex.: reviewer)', () => {
+    const tools = mapPermissionsToTools({
+      ...base,
+      permissions: {
+        tools: { allow: ['Read', 'Glob', 'Grep', 'LS'], deny: [] },
+        fs: { read: ['**'], write: [], deny: [] },
+        network: false,
+        exec: false,
+        secrets: { allow: [] },
+      },
+    })
+    expect(tools).not.toContain('Skill')
+  })
+
+  it('Skill: nomeado explicitamente em tools.allow libera mesmo sem curinga', () => {
+    const tools = mapPermissionsToTools({
+      ...base,
+      permissions: {
+        tools: { allow: ['Read', 'Skill'], deny: [] },
+        fs: { read: ['**'], write: [], deny: [] },
+        network: false,
+        exec: false,
+        secrets: { allow: [] },
+      },
+    })
+    expect(tools).toContain('Skill')
+  })
+
+  it('Skill: tools.deny vence o curinga', () => {
+    const tools = mapPermissionsToTools({
+      ...base,
+      permissions: {
+        tools: { allow: ['*'], deny: ['Skill'] },
+        fs: { read: ['**'], write: ['**'], deny: [] },
+        network: false,
+        exec: { allow: ['*'] },
+        secrets: { allow: [] },
+      },
+    })
+    expect(tools).not.toContain('Skill')
+  })
+})
+
+describe('ClaudeCodeProvider.createSession — evita ENAMETOOLONG no Windows', () => {
+  class FakeShellRunner implements ShellRunner {
+    readonly calls: ShellCommand[] = []
+    private readonly resolvers: ((result: ShellResult) => void)[] = []
+
+    run(command: ShellCommand): Promise<ShellResult> {
+      this.calls.push(command)
+      return Promise.resolve(this.emptyResult())
+    }
+
+    spawn(command: ShellCommand): ShellProcess {
+      this.calls.push(command)
+      let resolve!: (result: ShellResult) => void
+      const waitPromise = new Promise<ShellResult>((r) => {
+        resolve = r
+      })
+      this.resolvers.push(resolve)
+      return {
+        stdout: () => emptyLines(),
+        stderr: () => emptyLines(),
+        write: () => Promise.resolve(),
+        wait: () => waitPromise,
+        kill: () => Promise.resolve(),
+      }
+    }
+
+    resolveLast(): void {
+      this.resolvers.at(-1)?.(this.emptyResult())
+    }
+
+    private emptyResult(): ShellResult {
+      return { exitCode: 0, stdout: '', stderr: '', durationMs: 0, timedOut: false, truncated: false }
+    }
+  }
+
+  function emptyLines(): AsyncIterable<string> {
+    return { [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ done: true, value: undefined }) }) }
+  }
+
+  function makeRequest(): SessionRequest {
+    return {
+      systemPrompt: 'instrução de sistema '.repeat(5_000),
+      instruction: 'faça a tarefa '.repeat(5_000),
+      context: { fragments: [], tokens: 0, budgetTokens: 0, dropped: [], digest: 'd', builtAt: 0 },
+      tools: [],
+      workdir: process.cwd(),
+      permissions: {
+        tools: { allow: [], deny: [] },
+        fs: { read: ['**'], write: [], deny: [] },
+        network: false,
+        exec: false,
+        secrets: { allow: [] },
+      },
+      limits: {
+        maxTokens: 1,
+        maxWallclockMs: 60_000,
+        maxTurns: 3,
+        maxCost: { micros: 1, currency: 'USD' },
+      },
+      metadata: {},
+    }
+  }
+
+  it('prompt grande vai por stdin — nenhum argumento carrega o conteúdo', async () => {
+    const shell = new FakeShellRunner()
+    const provider = new ClaudeCodeProvider({ shell, logger: silentLogger })
+    const request = makeRequest()
+
+    await provider.createSession(request, new AbortController().signal)
+
+    const call = shell.calls[0]!
+    expect(call.args?.some((a) => a.includes('faça a tarefa'))).toBe(false)
+    expect(call.stdin).toContain('faça a tarefa')
+    // Nenhum argumento isolado chega perto do limite de linha de comando do Windows (~32k).
+    for (const arg of call.args ?? []) expect(arg.length).toBeLessThan(1_000)
+  })
+
+  it('system prompt grande vai por --append-system-prompt-file, não por argv', async () => {
+    const shell = new FakeShellRunner()
+    const provider = new ClaudeCodeProvider({ shell, logger: silentLogger })
+    const request = makeRequest()
+
+    await provider.createSession(request, new AbortController().signal)
+
+    const call = shell.calls[0]!
+    expect(call.args).not.toContain('--append-system-prompt')
+    const flagIndex = call.args!.indexOf('--append-system-prompt-file')
+    expect(flagIndex).toBeGreaterThanOrEqual(0)
+    const filePath = call.args![flagIndex + 1]!
+    await expect(readFile(filePath, 'utf8')).resolves.toBe(request.systemPrompt)
+  })
+
+  it('limpa o arquivo temporário do system prompt depois que o processo termina', async () => {
+    const shell = new FakeShellRunner()
+    const provider = new ClaudeCodeProvider({ shell, logger: silentLogger })
+    const request = makeRequest()
+
+    await provider.createSession(request, new AbortController().signal)
+    const call = shell.calls[0]!
+    const filePath = call.args![call.args!.indexOf('--append-system-prompt-file') + 1]!
+    await expect(readFile(filePath, 'utf8')).resolves.toBe(request.systemPrompt)
+
+    shell.resolveLast()
+    await new Promise((r) => setTimeout(r, 0))
+    await expect(readFile(filePath, 'utf8')).rejects.toThrow()
   })
 })

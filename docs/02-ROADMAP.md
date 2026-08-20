@@ -282,12 +282,90 @@ pelo provider sobre a tabela, e o aviso ruidoso quando um modelo não tem preço
 - Compactação de memória em escala; poda de eventos e checkpoints.
 - Documentação pública, guia de plugins, exemplos, site.
 
+**Achado principal ao investigar o escopo:** o mecanismo mais difícil — lease por arquivo — já
+estava construído, testado e ocioso desde a Fase 4 (`packages/state/src/leases.ts`,
+`fileLeasePolicy`, `SqlTaskQueue.eligible()`). O gargalo real era um só: `runTick()` processava
+exatamente uma task por vez, e `kernel.concurrency` (validado no schema desde sempre) nunca era
+lido em lugar nenhum. A fase virou, na prática, "destravar o que já existia" mais do que construir
+do zero.
+
+### Entregue
+
+- **Paralelismo real.** `kernel.ts` ganhou um fill-loop (`Map<TaskId, Promise<void>>`) que reclama
+  até `kernel.concurrency` tasks por tick antes de esperar a próxima liquidar. Em
+  `concurrency: 1` o comportamento é bit-a-bit idêntico ao de antes — os 10/10 casos do chaos test
+  original continuam verdes sem alteração. `wipLimitPolicy` e o lease por arquivo, que já
+  existiam, passam a ser finalmente load-bearing.
+- **`maxConcurrentSessions` respeitado.** Um semáforo por `providerId`
+  (`packages/core/src/util/semaphore.ts`, `packages/agents/src/session-limiter.ts`) garante que um
+  provider local de GPU única nunca recebe mais sessões simultâneas do que declara — vivendo em
+  `DefaultAgentRuntime`, único ponto por onde passam Executor, Planner e todos os gates.
+- **Chaos testing ampliado.** `crashPoint()` ganhou `URANUS_CRASH_AT_COUNT` (retrocompatível) e
+  `packages/kernel/src/chaos-concurrent.test.ts` prova, pela primeira vez, recuperação com **duas
+  tasks ativas simultâneas**: zero worktree órfão, zero lease presa, serialização correta sob
+  `touches` sobrepostos, e concorrência genuína (task B começa antes de A terminar).
+- **Poda de eventos.** Segmentos JSONL além dos últimos `telemetry.eventRetention.keepSegments`
+  (default 200) são apagados a cada checkpoint — nunca o segmento em escrita.
+- **Poda de checkpoint entre runs.** Runs terminados além de `runRetentionKeep` têm os checkpoints
+  zerados (arquivo + índice); as linhas de `runs`/`tasks` continuam intactas, é histórico barato.
+- **Compactação de memória em escala.** `MarkdownMemoryStore.pruneSuperseded()` já existia mas era
+  só CLI, opt-in, nunca chamado; agora `DefaultMemoryManager.maintain()` o chama automaticamente
+  todo tick de aprendizado, com `memory.pruneSupersededAfterDays` (default 30) — sem isso, arquivo
+  em disco e cache em processo cresciam pra sempre mesmo com a contagem ativa por escopo limitada.
+- **Instrumentação de RSS + soak test.** `process.memoryUsage().rss` é amostrado a cada checkpoint
+  (`gauge` já existente, zero wiring extra no `/api/metrics`). `packages/kernel/src/soak.test.ts`
+  roda ~200 tasks sintéticas via reinícios sucessivos do mesmo kernel e prova ausência de
+  crescimento linear de RSS — proxy acelerado (segundos, não horas) do item de 8h abaixo.
+- **Bug real encontrado pelo próprio soak test:** `this.stopRequested` nunca era resetado em
+  `start()` — reiniciar o mesmo kernel depois de um drain nunca funcionava (todo `start()`
+  seguinte terminava no tick 0, "não há mais tasks executáveis", sem processar nada). Corrigido.
+  Achado exatamente pelo tipo de cenário de longa duração que esta fase existe pra endurecer.
+- **`BudgetGuard.task` corrompia sob concorrência** — duas tasks resetando/consumindo a mesma
+  janela compartilhada misturava custo de uma na outra. Corrigido: `consume()` só escreve no
+  acumulador do run; `state().task` fica honestamente zerado em vez de um valor cruzado.
+- **`recentOutcomes` sem limite** (`kernel.ts`) — só era limitado na leitura, nunca na escrita.
+  Corrigido com cap em 200 no `push`.
+- **Multi-projeto validado como multi-processo.** Nenhuma reescrita de kernel/state foi
+  necessária — a arquitetura já isola cada projeto por `.uranus/state.db` + event store + sandbox
+  próprios. `packages/kernel/src/multi-project.test.ts` prova isso da forma mais forte possível:
+  duas pilhas completas (kernel + state + fila + event store) rodando concorrentemente no MESMO
+  processo, sem nenhum estado global compartilhado. Multi-tenancy real dentro de um único processo
+  (filtrar toda query por `project_id`, namespacear dashboard/event-store) fica fora de escopo,
+  como decisão deliberada — é um projeto maior e separado, não uma extensão natural do que existe.
+
+### Fora do escopo entregue, com o motivo
+
+- **Benchmark real de 8h contra um provider pago.** Não é responsável rodar isso de forma
+  autônoma sem autorização explícita a cada execução (consome orçamento real e tempo real). O que
+  foi entregue é a infraestrutura que prova a ausência de vazamento (RSS + soak test acelerado) —
+  a validação de campo, com custo e duração reais, fica como passo manual para quando o mantenedor
+  quiser rodar.
+- **Teste de composição real (`compose()`) do pacote `cli`.** Bloqueado por uma limitação técnica
+  do ambiente de teste: `import.meta.resolve()` (usado por `composition.ts` pra localizar o
+  catálogo de agentes) não é suportado pelo transform SSR do Vitest — por isso o pacote `cli` já
+  não tinha nenhum teste antes desta fase. O teste de multi-projeto foi escrito contra
+  `makeTestStack()` (o mesmo harness usado pelo resto da suíte do kernel), que espelha a mesma
+  arquitetura de isolamento (`.uranus/state.db`, event store e sandbox por projeto) sem passar por
+  esse caminho de código.
+- **Site público / guia de migração.** Fora de escopo desta entrega — ver `CHANGELOG.md` novo na
+  raiz, que documenta o que mudou nesta fase.
+
 ### Definition of Done
 
-- [ ] Run de 8 horas ininterruptas em repo real, sem intervenção, sem vazamento de memória
-      (RSS estável), com ≥ 70% de taxa de sucesso e 0 escritas fora de worktree.
-- [ ] 3 projetos em paralelo sem interferência.
-- [ ] Semver + changelog + guia de migração publicados.
+- [x] Paralelismo real testado por chaos com 2+ tasks concorrentes (zero worktree órfão, zero
+      lease presa, sem duplicação, concorrência genuína provada por ordem de eventos).
+- [x] Poda de eventos e checkpoints implementada e testada.
+- [x] Compactação de memória em escala implementada e testada.
+- [x] Instrumentação de RSS + soak test acelerado provando ausência de crescimento linear.
+- [x] Multi-projeto validado sem interferência (duas pilhas completas concorrentes no mesmo
+      processo).
+- [ ] Run de 8 horas ininterruptas **de verdade**, em repo real, contra provider pago, sem
+      intervenção, com ≥ 70% de taxa de sucesso e 0 escritas fora de worktree — pendente, é
+      validação manual de campo (ver acima).
+- [ ] 3 projetos em paralelo como prova de campo real (hoje provado por 2 instâncias in-process;
+      falta rodar como 3 processos de SO de verdade contra um repo real).
+- [ ] Semver + changelog + guia de migração publicados — `CHANGELOG.md` criado nesta fase; bump de
+      versão e guia de migração ficam para quando o DoD acima fechar de verdade.
 
 ---
 

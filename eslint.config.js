@@ -62,6 +62,12 @@ export default tseslint.config(
       '**/*.tsbuildinfo',
       // Fixtures de exemplo: são repositórios-alvo do Uranus, não código do framework.
       'examples/**',
+      // Assets de navegador do painel: JS de módulo ES servido como está, fora
+      // de qualquer tsconfig. O lint deste projeto é tipado (`strictTypeChecked`)
+      // e o serviço de projeto não consegue analisar arquivo que nenhum
+      // programa TypeScript inclui — daí "was not found by the project service".
+      // A verificação de sintaxe destes arquivos é `node --check`.
+      'packages/*/public/**',
     ],
   },
   js.configs.recommended,

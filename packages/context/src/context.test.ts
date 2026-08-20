@@ -1,7 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { ContextRequest, ContextSource, ProjectRef, Task } from '@uranus/core'
+import type {
+  ContextRequest,
+  ContextSource,
+  MemoryQuery,
+  MemoryRecord,
+  MemoryStore,
+  ProjectRef,
+  Task,
+} from '@uranus/core'
 import {
   isRestrictedMode,
   silentLogger,
@@ -14,6 +22,7 @@ import { EXECUTOR_SPEC } from '@uranus/agents'
 import { buildProjectDigest, freshnessKey } from './digest.js'
 import { DefaultContextManager } from './manager.js'
 import { DefaultContextPacker } from './packer.js'
+import { linkedMemorySource } from './sources.js'
 
 const NEVER = new AbortController().signal
 
@@ -367,5 +376,58 @@ describe('DefaultContextPacker (ADR-007)', () => {
       const pack = await packer.pack(request(dir, makeTask(), 1_000), NEVER)
       expect(pack.fragments).toHaveLength(1)
     })
+  })
+})
+
+describe('linkedMemorySource (projetos vinculados)', () => {
+  function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
+    return {
+      id: 'mem_x' as MemoryRecord['id'],
+      projectId: 'prj_vizinho' as MemoryRecord['projectId'],
+      scope: 'convention',
+      key: 'contrato-api',
+      title: 'Contrato de API',
+      body: 'POST /support/whatsapp-config configura o botão.',
+      tags: [],
+      confidence: 0.9,
+      source: { kind: 'human', ref: 'manual' },
+      refs: [],
+      validFrom: 0,
+      checksum: 'abc',
+      ...overrides,
+    }
+  }
+
+  function fakeStore(records: readonly MemoryRecord[]): MemoryStore {
+    return {
+      query: (_query: MemoryQuery) => Promise.resolve(records),
+    } as MemoryStore
+  }
+
+  it('sempre marca untrusted, mesmo memória curada por humano (INV-6)', async () => {
+    const source = linkedMemorySource([
+      { alias: 'core', store: fakeStore([record()]), scopes: ['convention'] },
+    ])
+    const fragments = await source.collect({ project: projectRef('/x'), hints: [] }, NEVER)
+    expect(fragments).toHaveLength(1)
+    expect(fragments[0]!.untrusted).toBe(true)
+    expect(fragments[0]!.kind).toBe('external')
+    expect(fragments[0]!.title).toContain('[core]')
+  })
+
+  it('prefixa o id com o alias — dois vizinhos com a mesma memória não colidem', async () => {
+    const source = linkedMemorySource([
+      { alias: 'core', store: fakeStore([record()]), scopes: ['convention'] },
+      { alias: 'infra', store: fakeStore([record()]), scopes: ['convention'] },
+    ])
+    const fragments = await source.collect({ project: projectRef('/x'), hints: [] }, NEVER)
+    expect(fragments).toHaveLength(2)
+    expect(new Set(fragments.map((f) => f.id)).size).toBe(2)
+  })
+
+  it('sem links configurados, não produz fragmento nenhum', async () => {
+    const source = linkedMemorySource([])
+    const fragments = await source.collect({ project: projectRef('/x'), hints: [] }, NEVER)
+    expect(fragments).toHaveLength(0)
   })
 })

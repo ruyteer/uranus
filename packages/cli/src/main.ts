@@ -2,11 +2,22 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { Command } from 'commander'
-import { parse as parseYaml } from 'yaml'
-import type { Task, TaskKind } from '@uranus/core'
-import { formatMoney, newProjectId, newTaskId, systemClock } from '@uranus/core'
+import { parseDocument } from 'yaml'
+import type { Logger, ProjectDigest } from '@uranus/core'
+import { MEMORY_SCOPES, createLogger, formatMoney, newProjectId, systemClock } from '@uranus/core'
+import type { BacklogItemState } from '@uranus/backlog'
+import type { ConfigLayer, UranusConfig } from '@uranus/config'
 import { loadConfig } from '@uranus/config'
 import { compose } from './composition.js'
+import { renderValidations } from './task-view.js'
+import {
+  BACKLOG_STATE_LABEL,
+  parseLabels,
+  parsePriority,
+  renderBacklogList,
+  renderBacklogShow,
+} from './backlog-view.js'
+import type { InstructionNote } from './instructions.js'
 
 /* eslint-disable no-console -- a CLI fala com o humano por stdout */
 
@@ -17,9 +28,11 @@ program.name('uranus').description('Uranus — Agentic Coding Harness Framework'
 
 program
   .command('init')
-  .description('Inicializa .uranus/ no diretório atual')
+  .description('Inicializa .uranus/ no diretório atual (guiado, quando há terminal)')
   .option('--name <name>', 'nome do projeto')
-  .action(async (options: { name?: string }) => {
+  .option('--yes', 'não pergunta nada: escreve a configuração padrão e sai')
+  .option('--defaults', 'sinônimo de --yes')
+  .action(async (options: { name?: string; yes?: boolean; defaults?: boolean }) => {
     const dir = process.cwd()
     const uranusDir = join(dir, '.uranus')
     await mkdir(join(uranusDir, 'backlog'), { recursive: true })
@@ -35,183 +48,513 @@ program
       console.log(`Já existe: ${configPath}`)
       return
     }
-    await writeFile(
-      configPath,
-      [
-        'version: 1',
-        'project:',
-        `  name: ${name}`,
-        'kernel:',
-        '  concurrency: 1',
-        'budget:',
-        '  perRun: { usd: 10, tokens: 2000000, wallclockMs: 7200000 }',
-        '  perTask: { usd: 3, tokens: 500000, wallclockMs: 1200000 }',
-        'providers:',
-        '  default: claude-code',
-        'integration:',
-        '  strategy: pull-request',
-        '  draftPullRequests: true',
-        '',
-      ].join('\n'),
-    )
+
+    const guiado = options.yes !== true && options.defaults !== true && process.stdin.isTTY
+    // A config mínima é escrita ANTES de qualquer pergunta, e não depois: o
+    // wizard edita um arquivo existente (`loadConfig` → `parseDocument`), e a
+    // composição que produz as sugestões também precisa de config para subir.
+    await writeFile(configPath, guiado ? configComentada(name) : configMinima(name))
     console.log(`Criado: ${configPath}`)
-    console.log('Próximo passo: uranus task add --file <task.yaml> && uranus start')
-  })
+    if (guiado) await configurarAposInit()
 
-// ── task ────────────────────────────────────────────────────────────────────
-
-const task = program.command('task').description('Gerencia tasks')
-
-task
-  .command('add')
-  .description('Adiciona uma task a partir de um arquivo YAML')
-  .requiredOption('--file <path>', 'arquivo YAML da task')
-  .action(async (options: { file: string }) => {
-    await withComposition(async ({ composition }) => {
-      const raw = await readFile(resolve(options.file), 'utf8')
-      const parsed = parseYaml(raw) as {
-        kind?: string
-        title?: string
-        intent?: string
-        touches?: string[]
-        acceptance?: { checks?: unknown[] }
-        maxAttempts?: number
-      }
-      const now = systemClock.now()
-      const newTask: Task = {
-        id: newTaskId(now),
-        projectId: composition.project.id,
-        kind: (parsed.kind ?? 'feature') as TaskKind,
-        title: parsed.title ?? 'sem título',
-        intent: parsed.intent ?? '',
-        state: 'ready',
-        priority: 50,
-        deps: [],
-        touches: parsed.touches ?? [],
-        acceptance: {
-          checks: (parsed.acceptance?.checks ?? []) as Task['acceptance']['checks'],
-          requireAll: true,
-        },
-        attempts: 0,
-        maxAttempts: parsed.maxAttempts ?? 3,
-        labels: [],
-        createdAt: now,
-        updatedAt: now,
-      }
-      const queued = await composition.deps.queue.enqueue(newTask)
-      if (!queued.ok) {
-        console.error(`ERRO: ${queued.error.message}`)
-        process.exitCode = 1
-        return
-      }
-      console.log(`Task enfileirada: ${newTask.id} — ${newTask.title}`)
+    const digest = await detectarProjeto()
+    const { writeClaudeConfig } = await import('./claude-bridge.js')
+    const claude = await writeClaudeConfig({
+      projectDir: dir,
+      projectName: name,
+      ...(digest === undefined ? {} : { digest }),
+      instructions: await instructionNotes(uranusDir),
     })
+    console.log(`\nClaude Code treinado para este projeto (${String(claude.wrote.length)} arquivos):`)
+    console.log(`  ${claude.wrote.join(', ')}`)
+    console.log('\nPróximo passo: uranus backlog add "..." && uranus chat')
   })
 
-task
-  .command('list')
-  .description('Lista tasks e estados')
+program
+  .command('claude')
+  .description('Gera/atualiza .claude/ (CLAUDE.md, agentes, hooks) — o "treino" que o Claude Code lê sozinho')
   .action(async () => {
-    await withComposition(async ({ composition }) => {
-      const all = await composition.state.tasks.all()
-      if (all.length === 0) {
-        console.log('Nenhuma task.')
-        return
-      }
-      for (const item of all) {
-        const block = item.blockReason === undefined ? '' : ` [${item.blockReason.message}]`
-        console.log(
-          `${item.id}  ${item.state.padEnd(12)} ${item.kind.padEnd(9)} ${String(item.attempts)}/${String(item.maxAttempts)}  ${item.title}${block}`,
-        )
-      }
+    const dir = process.cwd()
+    const loaded = await loadConfig({ projectDir: dir })
+    if (!loaded.ok) {
+      console.error(loaded.error.message)
+      process.exitCode = 1
+      return
+    }
+    const digest = await detectarProjeto()
+    const { writeClaudeConfig } = await import('./claude-bridge.js')
+    const result = await writeClaudeConfig({
+      projectDir: dir,
+      projectName: loaded.value.config.project.name,
+      ...(digest === undefined ? {} : { digest }),
+      instructions: await instructionNotes(join(dir, '.uranus')),
     })
+    console.log(`Atualizado: ${result.wrote.join(', ')}`)
   })
 
-task
-  .command('why <taskId>')
-  .description('Explica por que uma task está (ou não) sendo escolhida')
-  .action(async (taskId: string) => {
-    await withComposition(async ({ composition }) => {
-      const found = await composition.state.tasks.find(taskId as Task['id'])
-      if (found === undefined) {
-        console.error('Task não encontrada')
-        process.exitCode = 1
-        return
-      }
-      const { formatExplanation } = await import('@uranus/scheduler')
-      const now = systemClock.now()
-      const explanation = composition.deps.scheduler.explain(found, {
-        now,
-        stats: await composition.deps.queue.stats(),
-        budget: composition.deps.budget.state(),
-        activeLeases: await composition.deps.queue.activeLeases(now),
-        recentOutcomes: [],
-        mix: composition.config.scheduler.mix,
-        observedMix: {},
-        providerHealth: {},
-        restrictedMode: false,
+// ── relay (uso interno dos hooks do Claude Code) ────────────────────────────
+
+program
+  .command('relay <event> [marker...]')
+  .description(
+    'Uso interno: hook do `.claude/settings.json` repassa atividade da sessão pro painel. ' +
+      'Nunca falha nem bloqueia a sessão do Claude Code.',
+  )
+  .action(async (event: string) => {
+    // `[marker...]` existe só para engolir o `#uranus-managed` que o próprio
+    // Uranus grava depois do comando (ver `HOOK_MARKER` em `claude-bridge.ts`)
+    // — em shells que não tratam `#` como comentário (cmd.exe no Windows), ele
+    // chega como argumento de verdade, e sem isto o commander recusaria o
+    // comando inteiro com "too many arguments".
+    try {
+      const { readHookStdin, buildActivityEntry, postActivity } = await import('./relay.js')
+      const raw = await readHookStdin()
+      const entry = await buildActivityEntry(event, raw)
+      const loaded = await loadConfig({ projectDir: process.cwd() })
+      const dashboard = loaded.ok ? loaded.value.config.telemetry.dashboard : undefined
+      const host = dashboard?.host
+      await postActivity(entry, {
+        host: host === undefined || host === '0.0.0.0' ? '127.0.0.1' : host,
+        port: dashboard?.port ?? 4319,
+        ...(dashboard?.token === undefined ? {} : { token: dashboard.token }),
       })
-      console.log(formatExplanation(explanation, `${found.title} (${found.state})`))
+    } catch {
+      // Hook do Claude Code: uma falha aqui nunca pode travar a sessão do
+      // usuário por causa do painel do Uranus.
+    }
+  })
+
+// ── chat ────────────────────────────────────────────────────────────────────
+
+program
+  .command('chat')
+  .description(
+    'Abre uma sessão do Claude Code neste projeto — orquestrador mestre, mesma interface e ' +
+      'mesmo custo/sessão do `claude` real. `uranus init` já o deixou treinado.',
+  )
+  .argument('[args...]', 'argumentos repassados direto para o `claude` (ex.: --resume <id>)')
+  .allowUnknownOption()
+  .action(async (args: string[]) => {
+    const dir = process.cwd()
+    const loaded = await loadConfig({ projectDir: dir })
+    if (!loaded.ok) {
+      console.error(loaded.error.message)
+      console.error('Rode `uranus init` primeiro.')
+      process.exitCode = 1
+      return
+    }
+
+    // Atualiza .claude/ antes de abrir — best-effort: uma falha aqui não pode
+    // impedir o usuário de conversar com o Claude, só significa que o
+    // catálogo/CLAUDE.md podem estar um passo atrás do projeto atual.
+    try {
+      const digest = await detectarProjeto()
+      const { writeClaudeConfig } = await import('./claude-bridge.js')
+      await writeClaudeConfig({
+        projectDir: dir,
+        projectName: loaded.value.config.project.name,
+        ...(digest === undefined ? {} : { digest }),
+        instructions: await instructionNotes(join(dir, '.uranus')),
+      })
+    } catch (error) {
+      console.error(
+        `Aviso: não deu para atualizar .claude/ antes de abrir a sessão (${
+          error instanceof Error ? error.message : String(error)
+        }).`,
+      )
+    }
+
+    const { locateClaudeBinary } = await import('@uranus/providers')
+    const explicitBinary = loaded.value.config.providers.entries['claude-code']?.binary
+    const binary = locateClaudeBinary(explicitBinary)
+
+    console.log(`Abrindo Claude Code (orquestrado pelo Uranus) — ${binary}\n`)
+    const { spawn } = await import('node:child_process')
+    const child = spawn(binary, args, { stdio: 'inherit', cwd: dir })
+    const exitCode = await new Promise<number>((resolveExit) => {
+      child.on('error', (error) => {
+        console.error(
+          `Não foi possível iniciar o Claude Code: ${error.message}\n` +
+            'Instale o Claude Code CLI: https://docs.claude.com/claude-code',
+        )
+        resolveExit(1)
+      })
+      child.on('exit', (code) => {
+        resolveExit(code ?? 0)
+      })
+    })
+    process.exitCode = exitCode
+  })
+
+/**
+ * A configuração mínima do `--yes` e do modo não interativo.
+ *
+ * Estes bytes são contrato: script e CI dependem deles desde a primeira versão,
+ * e o modo guiado é um caminho a mais, não a substituição deste.
+ */
+/**
+ * Config mínima do `init`.
+ *
+ * Desde o pivot "Uranus é armadura" (ver `docs/00-ARCHITECTURE`), o Kernel
+ * não roda tasks sozinho por padrão — então orçamento, estratégia de
+ * integração e validação de código (que calibravam ESSE laço autônomo) não
+ * têm mais lugar aqui: gravar um valor "enxuto" pra eles seria fingir que
+ * ainda existe algo rodando para enxugar. `providers.default: claude-code` e
+ * o resto ficam nos defaults do schema — só o nome do projeto é decisão de
+ * verdade neste momento. O modo Kernel continua existindo (`ALL_CONFIG_CATEGORIES`
+ * em `config-wizard.ts`) para quem quiser voltar a ligá-lo à mão.
+ */
+function configMinima(name: string): string {
+  return ['version: 1', 'project:', `  name: ${name}`, ''].join('\n')
+}
+
+/**
+ * O mesmo, comentado — só o caminho guiado usa.
+ *
+ * Quem chega pelo wizard vai continuar abrindo este arquivo à mão depois, e uma
+ * seção sem explicação é uma seção que ninguém mexe. As edições seguintes
+ * preservam estes comentários.
+ */
+function configComentada(name: string): string {
+  return [
+    '# Configuração do Uranus.',
+    '# Edite à vontade: o `uranus config` muda valor por valor e preserva',
+    '# comentários, ordem e formatação deste arquivo.',
+    'version: 1',
+    '',
+    '# Nome que aparece nos commits, nos PRs e no painel.',
+    'project:',
+    `  name: ${name}`,
+    '',
+    '# Isto basta. O Uranus não roda tasks sozinho por padrão — quem decide e',
+    '# age é o Claude, via `uranus chat`. Orçamento, integração automática e',
+    '# validação de código continuam existindo como modo avançado',
+    '# (`uranus config` mostra as categorias padrão; o resto fica em',
+    '# ADVANCED_CONFIG_CATEGORIES para quando esse modo voltar a fazer sentido).',
+    '',
+  ].join('\n')
+}
+
+/** Oferece o wizard logo depois do `init`. Recusar aqui não custa nada. */
+async function configurarAposInit(): Promise<void> {
+  const { confirm, stdioPromptIo } = await import('./prompt-kit.js')
+  const io = stdioPromptIo()
+  try {
+    const quer = await confirm(io, 'Quer configurar o Uranus agora?', {
+      default: true,
+      help:
+        'São perguntas por categoria, com o valor atual sugerido em todas.\n' +
+        'Dá para pular e rodar `uranus config` quando quiser.',
+    })
+    if (!quer) return
+
+    io.write('\nAnalisando o projeto para sugerir valores — leva alguns segundos…\n')
+    const digest = await detectarProjeto()
+    const aberto = await abrirConfig()
+    if (aberto === undefined) return
+
+    const { runConfigWizard } = await import('./config-wizard.js')
+    await runConfigWizard({
+      io,
+      configPath: aberto.configPath,
+      source: aberto.source,
+      layers: aberto.layers,
+      effective: aberto.effective,
+      origins: aberto.origins,
+      ...(digest === undefined ? {} : { digest }),
+      save: (text: string) => writeFile(aberto.configPath, text, 'utf8'),
+    })
+  } finally {
+    io.close()
+  }
+}
+
+/**
+ * Detecção do projeto para alimentar as sugestões do wizard.
+ *
+ * Monta a composição porque é ela que faz o bootstrap do `ProjectDigest` (e
+ * grava o cache que o `uranus config` vai reaproveitar depois). Falhar aqui não
+ * é motivo para não configurar: sem digest o wizard só perde as sugestões.
+ */
+async function detectarProjeto(): Promise<ProjectDigest | undefined> {
+  try {
+    let digest: ProjectDigest | undefined
+    await withComposition(
+      async ({ composition }) => {
+        digest = await composition.contextManager.digest(composition.project)
+      },
+      { logger: createLogger({ level: 'error' }) },
+    )
+    return digest
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Instruções gravadas em `.uranus/instructions/` — via painel ou escritas à
+ * mão. Ausente/vazio nunca falha: sem instrução nenhuma o CLAUDE.md só não
+ * ganha a seção correspondente.
+ */
+async function instructionNotes(uranusDir: string): Promise<InstructionNote[]> {
+  try {
+    const { FileInstructionsStore } = await import('./instructions.js')
+    const store = new FileInstructionsStore({
+      dir: join(uranusDir, 'instructions'),
+      logger: createLogger({ level: 'error' }),
+    })
+    return [...(await store.list())]
+  } catch {
+    return []
+  }
+}
+
+// ── config ──────────────────────────────────────────────────────────────────
+
+const config = program
+  .command('config')
+  .description('Configuração do projeto: guiada por categorias, perguntas e opções')
+  .action(async () => {
+    // Mesmo critério do `task delete` e do `backlog add`: sem TTY não há a quem
+    // perguntar, e ler EOF como resposta gravaria configuração no escuro.
+    if (!process.stdin.isTTY) {
+      console.error(
+        'Sem terminal interativo: o modo guiado precisa de um TTY.\n' +
+          'Para ver o que está valendo : uranus config show\n' +
+          'Para mudar um valor         : uranus config set <caminho> <valor>',
+      )
+      process.exitCode = 1
+      return
+    }
+    const aberto = await abrirConfig()
+    if (aberto === undefined) return
+
+    const { runConfigWizard } = await import('./config-wizard.js')
+    const { stdioPromptIo } = await import('./prompt-kit.js')
+    const digest = await lerDigestEmCache()
+    const io = stdioPromptIo()
+    try {
+      console.log(`Configurando ${aberto.configPath}`)
+      console.log('Enter em branco mantém o valor que está entre colchetes.')
+      const gravadas = await runConfigWizard({
+        io,
+        configPath: aberto.configPath,
+        source: aberto.source,
+        layers: aberto.layers,
+        effective: aberto.effective,
+        origins: aberto.origins,
+        ...(digest === undefined ? {} : { digest }),
+        save: (text: string) => writeFile(aberto.configPath, text, 'utf8'),
+      })
+      console.log(
+        gravadas === 0
+          ? '\nNada foi alterado.'
+          : `\n${String(gravadas)} categoria(s) gravada(s). Confira com: uranus config show`,
+      )
+    } finally {
+      io.close()
+    }
+  })
+
+config
+  .command('show')
+  .description('Mostra a configuração efetiva por categoria e de onde veio cada valor')
+  .action(async () => {
+    const aberto = await abrirConfig()
+    if (aberto === undefined) return
+    const { renderConfigShow } = await import('./config-wizard.js')
+    for (const linha of renderConfigShow(aberto.effective, aberto.origins, aberto.configPath)) {
+      console.log(linha)
+    }
+  })
+
+config
+  .command('set <caminho> <valor>')
+  .description('Muda um valor sem perguntar nada — para script e CI')
+  .action(async (caminho: string, valor: string) => {
+    const aberto = await abrirConfig()
+    if (aberto === undefined) return
+    const {
+      applyWrites,
+      coerceRawValue,
+      describeSchema,
+      documentToData,
+      formatConfigValue,
+      pathSegments,
+      schemaAt,
+      validateProjectData,
+      valueAtPath,
+    } = await import('./config-file.js')
+
+    const node = schemaAt(caminho)
+    if (node === undefined) {
+      console.error(
+        `Não existe configuração em "${caminho}".\n` +
+          'Os caminhos válidos aparecem em: uranus config show',
+      )
+      process.exitCode = 1
+      return
+    }
+    const parsed = coerceRawValue(node, valor)
+    if (!parsed.ok) {
+      console.error(`Valor inválido para ${caminho}: ${parsed.problem}`)
+      console.error(`Este campo aceita ${describeSchema(node)}.`)
+      process.exitCode = 1
+      return
+    }
+
+    // Valida ANTES de gravar: caminho certo com valor fora da faixa não pode
+    // virar um arquivo que o próximo comando se recusa a carregar.
+    const doc = parseDocument(aberto.source)
+    applyWrites(doc, aberto.effective, [{ path: caminho, value: parsed.value }])
+    const validado = validateProjectData(documentToData(doc), aberto.layers)
+    if (!validado.ok) {
+      console.error(validado.error.message)
+      console.error(`\nO arquivo não foi alterado. ${caminho} aceita ${describeSchema(node)}.`)
+      process.exitCode = 1
+      return
+    }
+
+    // `resolvedConfig` porque o valor anterior de uma regra de validação ausente
+    // é a severidade que o core aplica, não "—": mostrar vazio faria parecer que
+    // a regra não rodava antes.
+    const { resolvedConfig } = await import('./config-wizard.js')
+    const antes = valueAtPath(resolvedConfig(aberto.effective), pathSegments(caminho))
+    const depois = valueAtPath(resolvedConfig(validado.value), pathSegments(caminho))
+    await writeFile(aberto.configPath, doc.toString(), 'utf8')
+    console.log(`${caminho}: ${formatConfigValue(antes)} → ${formatConfigValue(depois)}`)
+  })
+
+interface ConfigAberta {
+  readonly configPath: string
+  readonly source: string
+  readonly layers: readonly ConfigLayer[]
+  readonly effective: UranusConfig
+  readonly origins: ReadonlyMap<string, { layer: string; source: string }>
+}
+
+/**
+ * Abre a configuração do projeto para leitura ou edição.
+ *
+ * Deliberadamente sem `withComposition`: montar a composição carrega plugins,
+ * providers e digest — dezenas de segundos antes da primeira pergunta, para
+ * editar um arquivo de texto. `loadConfig` sozinho já dá o valor efetivo, as
+ * camadas (é no merge delas que a validação precisa acontecer) e a procedência.
+ */
+async function abrirConfig(): Promise<ConfigAberta | undefined> {
+  const loaded = await loadConfig({ projectDir: process.cwd() })
+  if (!loaded.ok) {
+    console.error(loaded.error.message)
+    process.exitCode = 1
+    return undefined
+  }
+  const camada = loaded.value.layers.find((layer) => layer.name === 'project')
+  if (camada === undefined) {
+    console.error('Nenhuma configuração de projeto encontrada. Rode: uranus init')
+    process.exitCode = 1
+    return undefined
+  }
+  if (camada.source.endsWith('.json')) {
+    console.error(
+      `A configuração deste projeto está em JSON (${camada.source}).\n` +
+        'A edição guiada só mexe em YAML — converta o arquivo ou edite-o à mão.',
+    )
+    process.exitCode = 1
+    return undefined
+  }
+  return {
+    configPath: camada.source,
+    source: await readFile(camada.source, 'utf8'),
+    layers: loaded.value.layers,
+    effective: loaded.value.config,
+    origins: loaded.value.origins,
+  }
+}
+
+/**
+ * O digest já detectado, lido direto do cache em disco.
+ *
+ * O `uranus config` não pode pagar uma composição inteira só para sugerir uma
+ * branch: o cache é escrito pelo `init` e por qualquer comando que já tenha
+ * rodado, e sem ele o wizard apenas fica sem sugestões.
+ */
+async function lerDigestEmCache(): Promise<ProjectDigest | undefined> {
+  const raw = await readFile(
+    join(process.cwd(), '.uranus', 'cache', 'project-digest.json'),
+    'utf8',
+  ).catch(() => undefined)
+  if (raw === undefined) return undefined
+  const { tryParseJson } = await import('@uranus/core')
+  return tryParseJson<ProjectDigest>(raw)
+}
+
+// ── validações ──────────────────────────────────────────────────────────────
+
+program
+  .command('validations')
+  .description('Mostra quais validações rodam, com que severidade e de onde veio cada uma')
+  .action(async () => {
+    await withComposition(({ composition }) => {
+      // A policy resolvida vem da composição; a seção crua da config entra junto
+      // porque só ela distingue "é o default" de "o projeto pediu isto".
+      for (const linha of renderValidations(composition.validations, composition.config.validations)) {
+        console.log(linha)
+      }
+      return Promise.resolve()
     })
   })
 
-task
-  .command('retry <taskId>')
-  .description('Devolve uma task bloqueada para a fila')
-  .action(async (taskId: string) => {
-    await withComposition(async ({ composition }) => {
-      const found = await composition.state.tasks.find(taskId as Task['id'])
-      if (found === undefined) {
-        console.error('Task não encontrada')
-        process.exitCode = 1
-        return
-      }
-      const { transition } = await import('@uranus/core')
-      const moved = transition(found, 'ready', { at: systemClock.now() })
-      if (!moved.ok) {
-        console.error(`Transição inválida: ${moved.error.message}`)
-        process.exitCode = 1
-        return
-      }
-      await composition.state.tasks.save(moved.value)
-      console.log(`Task ${taskId} devolvida à fila.`)
-    })
-  })
-
-// ── backlog / plan ──────────────────────────────────────────────────────────
+// ── backlog ─────────────────────────────────────────────────────────────────
 
 const backlog = program.command('backlog').description('Itens de backlog do projeto')
 
 backlog
-  .command('add <title>')
-  .description('Adiciona um item ao backlog')
+  .command('add [title]')
+  .description('Adiciona um item ao backlog (sem o título, pergunta no terminal)')
   .option('--body <text>', 'descrição do que precisa ser feito', '')
   .option('--label <label...>', 'labels')
   .option('--priority <n>', 'prioridade 0-100', (v) => Number.parseInt(v, 10), 50)
-  .action(async (title: string, options: { body: string; label?: string[]; priority: number }) => {
-    await withComposition(async ({ composition }) => {
-      const added = await composition.backlog.add({
-        title,
-        body: options.body,
-        labels: options.label ?? [],
-        priority: options.priority,
-        createdAt: systemClock.now(),
-      })
-      if (!added.ok) {
-        console.error(`ERRO: ${added.error.message}`)
+  .action(
+    async (
+      title: string | undefined,
+      options: { body: string; label?: string[]; priority: number },
+    ) => {
+      // Perguntar ANTES de compor: montar a composição carrega plugins,
+      // providers e digest — meio minuto entre o comando e a primeira pergunta.
+      const entrada =
+        title === undefined
+          ? await perguntarItemDeBacklog(options)
+          : {
+              title,
+              body: options.body,
+              labels: options.label ?? [],
+              priority: options.priority,
+            }
+      if (entrada === undefined) {
         process.exitCode = 1
         return
       }
-      console.log(`Item criado: ${added.value.id}`)
-      console.log(
-        `Edite em .uranus/backlog/${added.value.id}.yaml ou rode: uranus plan ${added.value.id}`,
-      )
-    })
-  })
+
+      await withComposition(async ({ composition }) => {
+        const added = await composition.backlog.add({
+          ...entrada,
+          createdAt: systemClock.now(),
+        })
+        if (!added.ok) {
+          console.error(`ERRO: ${added.error.message}`)
+          process.exitCode = 1
+          return
+        }
+        console.log(`\nItem criado: ${added.value.id}`)
+        console.log('Peça pro Claude puxar o backlog: uranus chat')
+        console.log(`Texto do item em .uranus/backlog/${added.value.id}.yaml — edite à vontade.`)
+      })
+    },
+  )
 
 backlog
   .command('list')
-  .description('Lista itens do backlog')
+  .description('Lista itens do backlog com o progresso das subtasks de cada um')
   .action(async () => {
     await withComposition(async ({ composition }) => {
       const items = await composition.backlog.list()
@@ -219,13 +562,70 @@ backlog
         console.log('Backlog vazio. Use: uranus backlog add "título" --body "..."')
         return
       }
-      for (const item of items) {
-        const rejections =
-          item.lastRejections === undefined ? '' : ` [rejeitado: ${item.lastRejections.length}]`
-        console.log(
-          `${item.id.padEnd(40)} ${item.state.padEnd(8)} p${String(item.priority).padStart(3)}  ${item.title}${rejections}`,
-        )
+      // Progresso vem das tasks do estado quente, casadas pelo item de origem.
+      const tasks = await composition.state.tasks.all()
+      for (const linha of renderBacklogList(
+        items,
+        tasks,
+        composition.config.backlog.maxPlanningFailures,
+      )) {
+        console.log(linha)
       }
+    })
+  })
+
+backlog
+  .command('show <id>')
+  .description('Mostra um item por inteiro: corpo, plano, subtasks e recusas do validador')
+  .action(async (id: string) => {
+    await withComposition(async ({ composition }) => {
+      const item = await composition.backlog.get(id)
+      if (item === undefined) {
+        console.error(`Item "${id}" não encontrado. Veja: uranus backlog list`)
+        process.exitCode = 1
+        return
+      }
+      const tasks = await composition.state.tasks.all()
+      for (const linha of renderBacklogShow(
+        item,
+        tasks,
+        composition.config.backlog.maxPlanningFailures,
+      )) {
+        console.log(linha)
+      }
+    })
+  })
+
+backlog
+  .command('status <id> <novoEstado>')
+  .description(`Troca o estado de um item à mão (${Object.keys(BACKLOG_STATE_LABEL).join('|')})`)
+  .action(async (id: string, novoEstado: string) => {
+    await withComposition(async ({ composition }) => {
+      const item = await composition.backlog.get(id)
+      if (item === undefined) {
+        console.error(`Item "${id}" não encontrado. Veja: uranus backlog list`)
+        process.exitCode = 1
+        return
+      }
+      if (!(novoEstado in BACKLOG_STATE_LABEL)) {
+        console.error(
+          `Estado inválido: "${novoEstado}". Use um de: ${Object.keys(BACKLOG_STATE_LABEL).join(', ')}.`,
+        )
+        process.exitCode = 1
+        return
+      }
+      const alvo = novoEstado as BacklogItemState
+      if (item.state === alvo) {
+        console.log(`Item ${id} já está em "${novoEstado}". Nada a fazer.`)
+        return
+      }
+      const updated = await composition.backlog.update({ ...item, state: alvo })
+      if (!updated.ok) {
+        console.error(`ERRO: ${updated.error.message}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`Item ${id}: ${BACKLOG_STATE_LABEL[item.state]} → ${BACKLOG_STATE_LABEL[alvo]}`)
     })
   })
 
@@ -246,164 +646,6 @@ backlog
       )
       console.log(
         `Importados: ${String(result.imported)} · ignorados (já existiam): ${String(result.skipped)}`,
-      )
-    })
-  })
-
-program
-  .command('plan <itemId>')
-  .description('Planeja um item de backlog, transformando-o em tasks')
-  .option('--dry-run', 'valida o plano sem enfileirar as tasks')
-  .action(async (itemId: string, options: { dryRun?: boolean }) => {
-    await withComposition(async ({ composition }) => {
-      const item = await composition.backlog.get(itemId)
-      if (item === undefined) {
-        console.error(`Item "${itemId}" não encontrado. Veja: uranus backlog list`)
-        process.exitCode = 1
-        return
-      }
-      if (options.dryRun === true) {
-        console.log('--dry-run ainda invoca o Planner (custa tokens), mas não enfileira nada.')
-      }
-
-      const digest = await composition.contextManager.digest(composition.project)
-      console.log(`Planejando "${item.title}"…`)
-
-      const result = await composition.planning.planItem(item, digest, new AbortController().signal)
-      if (!result.ok) {
-        console.error(`\nPlano rejeitado: ${result.error.message}`)
-        const { isUranusError } = await import('@uranus/core')
-        const rejections = isUranusError(result.error)
-          ? result.error.context['rejections']
-          : undefined
-        if (Array.isArray(rejections)) {
-          for (const rejection of rejections) console.error(`  • ${String(rejection)}`)
-        }
-        await composition.backlog.update({
-          ...item,
-          lastRejections: Array.isArray(rejections) ? rejections.map(String) : [],
-        })
-        process.exitCode = 1
-        return
-      }
-
-      console.log(`\n${result.value.summary}\n`)
-      for (const task of result.value.created) {
-        console.log(`  ${task.id}  ${task.kind.padEnd(9)} ${task.title}`)
-        console.log(`    escopo: ${task.touches.join(', ')}`)
-        console.log(`    checks: ${task.acceptance.checks.map((c) => c.kind).join(', ')}`)
-      }
-      await composition.backlog.update({ ...item, state: 'planned', planId: result.value.planId })
-      console.log(`\n${String(result.value.created.length)} task(s) na fila. Rode: uranus start`)
-    })
-  })
-
-// ── providers ───────────────────────────────────────────────────────────────
-
-const provider = program.command('provider').description('Modelos e roteamento')
-
-provider
-  .command('list')
-  .description('Lista providers registrados e o roteamento por papel')
-  .action(async () => {
-    await withComposition(({ composition }) => {
-      const registered = composition.deps.providers.list()
-      if (registered.length === 0) {
-        console.log('Nenhum provider registrado.')
-        return Promise.resolve()
-      }
-
-      console.log('Providers:')
-      for (const entry of registered) {
-        const caps = entry.capabilities
-        console.log(
-          `  ${entry.id.padEnd(14)} ${entry.kind.padEnd(4)} ${
-            caps.nativeFileEditing ? 'edita arquivos' : 'ferramentas via Uranus'
-          } · contexto ${String(caps.maxContextTokens)} · ${String(caps.maxConcurrentSessions)} sessão(ões)`,
-        )
-      }
-
-      const byAgent = composition.config.providers.byAgent
-      const byTier = composition.config.providers.byTier
-      if (Object.keys(byAgent).length > 0 || Object.keys(byTier).length > 0) {
-        console.log('\nRoteamento:')
-        for (const [agent, id] of Object.entries(byAgent)) {
-          console.log(`  agente ${agent.padEnd(12)} → ${id}`)
-        }
-        for (const [tier, id] of Object.entries(byTier)) {
-          console.log(`  tier   ${tier.padEnd(12)} → ${id}`)
-        }
-      }
-      console.log(`\nPadrão: ${composition.config.providers.default}`)
-      return Promise.resolve()
-    })
-  })
-
-provider
-  .command('test [providerId]')
-  .description('Testa a conectividade dos providers (health check)')
-  .action(async (providerId?: string) => {
-    await withComposition(async ({ composition }) => {
-      const alvos = composition.deps.providers
-        .list()
-        .filter((entry) => providerId === undefined || entry.id === providerId)
-
-      if (alvos.length === 0) {
-        console.error(
-          providerId === undefined
-            ? 'Nenhum provider registrado.'
-            : `Provider "${providerId}" não registrado.`,
-        )
-        process.exitCode = 1
-        return
-      }
-
-      let algumFalhou = false
-      for (const entry of alvos) {
-        const report = await entry.health(new AbortController().signal)
-        console.log(
-          `  ${report.healthy ? 'OK   ' : 'FALHA'} ${entry.id.padEnd(14)} ${report.detail}`,
-        )
-        if (!report.healthy) algumFalhou = true
-      }
-      if (algumFalhou) process.exitCode = 1
-    })
-  })
-
-provider
-  .command('why <agente>')
-  .description('Mostra qual provider seria escolhido para um agente e por quê')
-  .action(async (agente: string) => {
-    await withComposition(async ({ composition }) => {
-      const spec = composition.deps.agents.get(agente)
-      if (spec === undefined) {
-        console.error(
-          `Agente "${agente}" não registrado. Disponíveis: ${composition.deps.agents
-            .list()
-            .map((s) => s.name)
-            .join(', ')}`,
-        )
-        process.exitCode = 1
-        return
-      }
-      const { ProviderRouter } = await import('@uranus/providers')
-      if (composition.deps.providers instanceof ProviderRouter) {
-        console.log(
-          composition.deps.providers.explain({
-            agent: agente,
-            ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
-          }),
-        )
-      }
-      const resolved = composition.deps.providers.resolve({
-        agent: agente,
-        ...(spec.model?.tier === undefined ? {} : { tier: spec.model.tier }),
-        ...(spec.requires === undefined ? {} : { capabilities: spec.requires }),
-      })
-      console.log(
-        resolved.ok
-          ? `\nEscolhido: ${resolved.value.id}`
-          : `\nNenhum provider satisfaz: ${resolved.error.message}`,
       )
     })
   })
@@ -481,6 +723,71 @@ memory
   })
 
 memory
+  .command('add [title]')
+  .description(
+    'Grava uma memória — pensado para o Claude registrar o que aprendeu durante `uranus chat` ' +
+      '(decisão, preferência, convenção, bug recorrente…), não só para o humano editar à mão',
+  )
+  .requiredOption('--scope <scope>', `escopo: ${MEMORY_SCOPES.join(', ')}`)
+  .option('--body <text>', 'corpo da memória', '')
+  .option(
+    '--key <key>',
+    'chave estável — gravar de novo com a mesma chave atualiza o registro (default: derivada do título)',
+  )
+  .option('--tags <tags>', 'tags separadas por vírgula', '')
+  .option('--confidence <n>', 'confiança 0-1', (v) => Number.parseFloat(v), 0.8)
+  .action(
+    async (
+      title: string | undefined,
+      options: { scope: string; body: string; key?: string; tags: string; confidence: number },
+    ) => {
+      if (title === undefined || title.trim() === '') {
+        console.error('Informe um título: uranus memory add "título" --scope <escopo> --body "..."')
+        process.exitCode = 1
+        return
+      }
+      if (!MEMORY_SCOPES.includes(options.scope as (typeof MEMORY_SCOPES)[number])) {
+        console.error(`Escopo inválido: "${options.scope}". Use um de: ${MEMORY_SCOPES.join(', ')}.`)
+        process.exitCode = 1
+        return
+      }
+
+      await withComposition(async ({ composition }) => {
+        const key = options.key === undefined || options.key.trim() === ''
+          ? slugifyMemoryKey(title)
+          : options.key.trim()
+        const confidence = Number.isFinite(options.confidence)
+          ? Math.min(1, Math.max(0, options.confidence))
+          : 0.8
+        const saved = await composition.deps.memoryManager.remember([
+          {
+            scope: options.scope as (typeof MEMORY_SCOPES)[number],
+            key,
+            title: title.trim(),
+            body: options.body,
+            tags: parseLabels(options.tags),
+            confidence,
+            source: { kind: 'agent', ref: 'uranus chat' },
+            refs: [],
+          },
+        ])
+        if (saved.length === 0) {
+          console.error(
+            'Memória não gravada — confiança abaixo do piso configurado (memory.minConfidence).',
+          )
+          process.exitCode = 1
+          return
+        }
+        console.log(`Memória gravada: ${saved[0]?.id}  [${saved[0]?.scope}]  ${saved[0]?.title}`)
+        console.log(
+          'Arquivo em .uranus/memory/ — use [[título de outra nota]] no corpo para linkar no vault. ' +
+            'Veja o grafo: uranus vault',
+        )
+      })
+    },
+  )
+
+memory
   .command('show <idOrKey>')
   .description('Mostra um registro completo')
   .action(async (idOrKey: string) => {
@@ -522,6 +829,39 @@ memory
         console.log(
           `${report.scope}: ${String(report.before)} → ${String(report.after)} registros (${String(report.merged.length)} fundidos)`,
         )
+      }
+    })
+  })
+
+program
+  .command('vault')
+  .description(
+    'Mostra o grafo do vault — memória, backlog e instruções ligados por [[wikilinks]] no corpo de cada nota',
+  )
+  .action(async () => {
+    await withComposition(async ({ composition }) => {
+      const graph = await composition.dashboardData.vault?.graph()
+      if (graph === undefined) {
+        console.log('Vault não suportado neste projeto.')
+        return
+      }
+      if (graph.nodes.length === 0) {
+        console.log(
+          'Vault vazio. Memória (`uranus memory add`), backlog e instruções aparecem aqui assim que existirem.',
+        )
+        return
+      }
+      const byId = new Map(graph.nodes.map((node) => [node.id, node]))
+      for (const node of graph.nodes) {
+        const links = graph.edges
+          .filter((edge) => edge.from === node.id)
+          .map((edge) => byId.get(edge.to)?.title ?? edge.to)
+        console.log(`[${node.kind}] ${node.title}${node.scope === undefined ? '' : ` (${node.scope})`}`)
+        console.log(`  ${node.excerpt}`)
+        if (links.length > 0) console.log(`  → ${links.join(', ')}`)
+      }
+      if (graph.unresolved.length > 0) {
+        console.log(`\nLinks ainda sem nota correspondente: ${graph.unresolved.join(', ')}`)
       }
     })
   })
@@ -687,100 +1027,6 @@ function describeRule(rule: {
   }
 }
 
-// ── start / status / logs ───────────────────────────────────────────────────
-
-program
-  .command('start')
-  .description('Inicia o kernel e trabalha até drenar a fila')
-  .option('--max-tasks <n>', 'máximo de tasks a completar', (v) => Number.parseInt(v, 10))
-  .option('--resume <runId>', 'retoma um run interrompido')
-  .option('--dashboard', 'sobe o painel web junto com o run')
-  .option('--port <n>', 'porta do painel', (v) => Number.parseInt(v, 10))
-  .action(
-    async (options: { maxTasks?: number; resume?: string; dashboard?: boolean; port?: number }) => {
-      await withComposition(async ({ composition }) => {
-        const { asRunId } = await import('@uranus/core')
-        const painel =
-          options.dashboard === true || composition.config.telemetry.dashboard.enabled
-            ? await serveDashboard(composition, options.port)
-            : undefined
-        const unsub = composition.kernel.events.onAny((event) => {
-          console.log(`  ${event.name}${event.taskId === undefined ? '' : ` ${event.taskId}`}`)
-        })
-        const started = await composition.kernel.start({
-          projectId: composition.project.id,
-          ...(options.maxTasks === undefined ? {} : { maxTasks: options.maxTasks }),
-          ...(options.resume === undefined ? {} : { resumeRunId: asRunId(options.resume) }),
-        })
-        if (!started.ok) {
-          console.error(`Falha ao iniciar: ${started.error.message}`)
-          process.exitCode = 1
-          return
-        }
-        console.log(`Run: ${started.value}`)
-
-        const stop = (): void => {
-          void composition.kernel.stop('interrompido pelo usuário (SIGINT)')
-        }
-        process.on('SIGINT', stop)
-        await composition.kernel.wait()
-        process.off('SIGINT', stop)
-        unsub()
-
-        const budget = composition.kernel.status().budget
-        console.log(
-          `Encerrado. Custo do run: ${formatMoney(budget.run.usedCost)} · tokens: ${String(budget.run.usedTokens)}`,
-        )
-        // O painel fica de pé depois do run de propósito: é logo depois de
-        // terminar que alguém quer olhar custo, achados e o que foi comitado.
-        if (painel !== undefined) {
-          console.log(`\nPainel aberto em ${painel.url} — Ctrl+C para encerrar.`)
-          await new Promise<void>((resolve) => {
-            process.once('SIGINT', () => {
-              resolve()
-            })
-          })
-          await painel.close()
-        }
-      })
-    },
-  )
-
-program
-  .command('status')
-  .description('Mostra o estado da fila e do último run')
-  .action(async () => {
-    await withComposition(async ({ composition }) => {
-      const stats = await composition.deps.queue.stats()
-      const latest = await composition.state.runs.latest()
-      console.log(`Tasks: ${String(stats.total)}`)
-      for (const [state, count] of Object.entries(stats.byState)) {
-        if (count > 0) console.log(`  ${state.padEnd(12)} ${String(count)}`)
-      }
-      if (latest !== undefined) {
-        console.log(
-          `Último run: ${latest.id} — ${latest.status} (${String(latest.tick)} ticks)${latest.stopReason === undefined ? '' : ` — ${latest.stopReason}`}`,
-        )
-      }
-    })
-  })
-
-program
-  .command('logs')
-  .description('Mostra os últimos eventos do log')
-  .option('--tail <n>', 'quantidade', (v) => Number.parseInt(v, 10), 50)
-  .action(async (options: { tail: number }) => {
-    await withComposition(async ({ composition }) => {
-      const head = await composition.eventStore.head()
-      const from = Math.max(1, head - options.tail + 1)
-      for await (const event of composition.eventStore.read(from)) {
-        console.log(
-          `${String(event.seq).padStart(6)} ${new Date(event.at).toISOString()} ${event.name}${event.taskId === undefined ? '' : ` ${event.taskId}`}`,
-        )
-      }
-    })
-  })
-
 // ── doctor ──────────────────────────────────────────────────────────────────
 
 program
@@ -865,7 +1111,7 @@ program
     }
   })
 
-// ── dashboard / custo ───────────────────────────────────────────────────────
+// ── dashboard ───────────────────────────────────────────────────────────────
 
 program
   .command('dashboard')
@@ -886,70 +1132,18 @@ program
     })
   })
 
-const cost = program.command('cost').description('Custo real por task, agente e modelo')
-
-cost
-  .command('show', { isDefault: true })
-  .description('Resumo do custo contabilizado')
-  .action(async () => {
-    await withComposition(async ({ composition }) => {
-      const accountant = composition.observability.cost
-      const stats = accountant.stats()
-      if (stats.calls === 0) {
-        console.log('Nenhuma sessão de agente contabilizada ainda neste processo.')
-        console.log('O custo é acumulado durante o run: use `uranus start --dashboard`.')
-        return Promise.resolve()
-      }
-
-      console.log(`Total: ${formatMoney(accountant.total())} em ${String(stats.calls)} sessões`)
-      console.log('\nPor agente:')
-      for (const row of accountant.breakdownByAgent()) {
-        console.log(
-          `  ${row.key.padEnd(16)} ${formatMoney(row.cost).padStart(10)}  ${String(row.calls)} sessões`,
-        )
-      }
-      console.log('\nPor modelo:')
-      for (const row of accountant.breakdownByModel()) {
-        console.log(`  ${row.key.padEnd(30)} ${formatMoney(row.cost).padStart(10)}`)
-      }
-      return Promise.resolve()
-    })
-  })
-
-cost
-  .command('reconcile <valorNaFatura>')
-  .description('Compara o total contabilizado com a fatura real do provider')
-  .action(async (raw: string) => {
-    await withComposition(({ composition }) => {
-      const invoice = Number.parseFloat(raw.replace(/[^0-9.,]/g, '').replace(',', '.'))
-      if (!Number.isFinite(invoice)) {
-        console.error(`Valor inválido: ${raw}`)
-        process.exitCode = 1
-        return Promise.resolve()
-      }
-      const result = composition.observability.cost.reconcile(invoice)
-      console.log(`Uranus reportou: ${formatMoney(result.reported)}`)
-      console.log(`Fatura:          ${formatMoney(result.invoice)}`)
-      console.log(`Diferença:       ${(result.deltaRatio * 100).toFixed(1)}%`)
-      console.log(
-        result.withinTolerance
-          ? '\nDentro da tolerância de ±3%.'
-          : '\nFora da tolerância. Causa mais comum: modelo sem preço na tabela — ' +
-              'procure "sem preço conhecido" no log e corrija em telemetry.pricing.',
-      )
-      if (!result.withinTolerance) process.exitCode = 1
-      return Promise.resolve()
-    })
-  })
-
 async function serveDashboard(
   composition: Awaited<ReturnType<typeof compose>>,
   port?: number,
   host?: string,
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const { DashboardServer, SseHub } = await import('@uranus/dashboard')
+  const { locateClaudeBinary } = await import('@uranus/providers')
   const config = composition.config.telemetry.dashboard
   const hub = new SseHub()
+  const claudeBinary = locateClaudeBinary(
+    composition.config.providers.entries['claude-code']?.binary,
+  )
   const server = new DashboardServer(
     {
       aggregator: composition.observability.aggregator,
@@ -960,9 +1154,26 @@ async function serveDashboard(
       port: port ?? config.port,
       host: host ?? config.host,
       ...(config.token === undefined ? {} : { token: config.token }),
+      // Sem esta porta o painel sobe somente-leitura — é o que o `dashboard.md`
+      // pedia para deixar de ser: kanban, CRUD de task, config e validações.
+      data: composition.dashboardData,
       control: {
         pause: () => composition.kernel.pause(),
         resume: () => composition.kernel.resume(),
+      },
+      // A aba Terminal abre um destes dois no navegador: a mesma sessão do
+      // `uranus chat` (orquestrador), ou um shell puro para comandos soltos.
+      terminalProfiles: {
+        claude: {
+          command: claudeBinary,
+          cwd: composition.project.rootDir,
+          label: 'claude',
+        },
+        shell: {
+          command: process.platform === 'win32' ? 'cmd.exe' : (process.env['SHELL'] ?? '/bin/sh'),
+          cwd: composition.project.rootDir,
+          label: 'shell',
+        },
       },
     },
     hub,
@@ -974,8 +1185,93 @@ async function serveDashboard(
 
 // ── infra ───────────────────────────────────────────────────────────────────
 
+/**
+ * Chave estável de memória a partir do título.
+ *
+ * Sem sufixo de tempo (diferente do slug de backlog/instrução): a chave é o
+ * que faz duas gravações do mesmo fato colidirem e virarem dedupe/supersessão
+ * em vez de dois registros soltos dizendo a mesma coisa.
+ */
+function slugifyMemoryKey(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+  return slug === '' ? 'memoria' : slug
+}
+
+interface ItemDeBacklogInformado {
+  readonly title: string
+  readonly body: string
+  readonly labels: readonly string[]
+  readonly priority: number
+}
+
+/**
+ * Modo guiado do `uranus backlog add`.
+ *
+ * Mesmo critério do `task delete`: sem TTY não há a quem perguntar, e ler EOF
+ * como resposta criaria um item vazio em script. A saída é recusar e mostrar a
+ * forma não-interativa do comando.
+ */
+async function perguntarItemDeBacklog(padroes: {
+  body: string
+  label?: string[]
+  priority: number
+}): Promise<ItemDeBacklogInformado | undefined> {
+  if (!process.stdin.isTTY) {
+    console.error(
+      'Sem terminal interativo: o modo guiado precisa de um TTY.\n' +
+        'Passe o título direto — uranus backlog add "título" --body "..." --priority 70 --label x',
+    )
+    return undefined
+  }
+
+  const { createInterface } = await import('node:readline/promises')
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    console.log('Novo item de backlog. Enter em branco aceita o valor entre colchetes.')
+    console.log('')
+    const title = (await rl.question('Título: ')).trim()
+    if (title === '') {
+      console.error('Sem título não há item — o título é o que vira o id e o pedido ao Planner.')
+      return undefined
+    }
+
+    console.log('')
+    console.log('Corpo: o que precisa acontecer e como saber que ficou pronto.')
+    console.log('Quanto mais concreto, menos o Planner inventa. Termine com um ponto sozinho (.)')
+    const linhas: string[] = []
+    for (;;) {
+      const linha = await rl.question('| ')
+      if (linha.trim() === '.') break
+      linhas.push(linha)
+    }
+    const digitado = linhas.join('\n').trim()
+
+    const prioridade = parsePriority(
+      await rl.question(`\nPrioridade 0-100 [${String(padroes.priority)}]: `),
+      padroes.priority,
+    )
+    const labels = parseLabels(await rl.question('Labels separadas por vírgula []: '))
+
+    return {
+      title,
+      body: digitado === '' ? padroes.body : digitado,
+      labels: labels.length > 0 ? labels : (padroes.label ?? []),
+      priority: prioridade,
+    }
+  } finally {
+    rl.close()
+  }
+}
+
 async function withComposition(
   fn: (context: { composition: Awaited<ReturnType<typeof compose>> }) => Promise<void>,
+  overrides?: { logger?: Logger },
 ): Promise<void> {
   const loaded = await loadConfig({ projectDir: process.cwd() })
   if (!loaded.ok) {
@@ -986,6 +1282,7 @@ async function withComposition(
   const composition = await compose({
     projectDir: process.cwd(),
     config: loaded.value.config,
+    ...(overrides?.logger === undefined ? {} : { logger: overrides.logger }),
   })
   try {
     await fn({ composition })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { silentLogger, systemClock, unwrap } from '@uranus/core'
-import type { DiffCheck, Task, VerifyInput, Workspace } from '@uranus/core'
+import { resolveValidationPolicy, silentLogger, systemClock, unwrap } from '@uranus/core'
+import type { DiffCheck, DiffSummary, Task, VcsAdapter, VerifyInput, Workspace } from '@uranus/core'
 import { makeTask, withTempDir } from '@uranus/testkit'
 import { OutputCollector } from './shell/output.js'
 import { DefaultShellRunner } from './shell/runner.js'
@@ -10,10 +10,14 @@ import {
   commandCheckImpl,
   evaluateDiff,
   schemaCheckImpl,
+  testsCheckImpl,
 } from './verifier/checks.js'
 import { categorizeCheck, diagnose } from './diagnosis/classifier.js'
 
 const NEVER = new AbortController().signal
+
+/** Nenhum dos testes de `forbidSkipped` aciona `requireNewTests` — `diff` nunca é chamado. */
+const fakeVcs = {} as VcsAdapter
 
 function runner(): DefaultShellRunner {
   return new DefaultShellRunner({ clock: systemClock, logger: silentLogger })
@@ -172,6 +176,99 @@ describe('checks', () => {
         NEVER,
       )
       expect(custom.passed).toBe(true)
+    })
+  })
+
+  it('tests check: forbidSkipped só reprova com contagem real de pulados, não pela palavra sozinha', async () => {
+    await withTempDir(async (dir) => {
+      const task = makeTask()
+      const input: VerifyInput = {
+        contract: task.acceptance,
+        workspace: fakeWorkspace(dir, task),
+        task,
+      }
+      // Linhas soltas via múltiplos console.log — evita escapar aspas/`\n`
+      // dentro do argumento de shell (frágil no cmd.exe do Windows).
+      const zeroSkippedCmd =
+        "node -e \"console.log('tests 1'); console.log('pass 1'); console.log('skipped 0'); console.log('todo 0')\""
+      const realSkippedCmd =
+        "node -e \"console.log('tests 3'); console.log('pass 1'); console.log('skipped 2'); console.log('todo 0')\""
+      const impl = testsCheckImpl(runner(), fakeVcs, (id) =>
+        id === 'node-test-zero'
+          ? zeroSkippedCmd
+          : id === 'node-test-real'
+            ? realSkippedCmd
+            : undefined,
+      )
+
+      // Regressão: a linha de resumo que o `node --test` sempre imprime
+      // ("ℹ skipped 0") não pode reprovar uma suíte 100% verde.
+      const zeroSkipped = await impl.run(
+        {
+          kind: 'tests',
+          id: 'zero-skipped',
+          runner: 'node-test-zero',
+          timeoutMs: 15_000,
+          forbidSkipped: true,
+        },
+        input,
+        NEVER,
+      )
+      expect(zeroSkipped.passed).toBe(true)
+
+      // Mas um pulado de verdade (contagem > 0) ainda reprova.
+      const realSkipped = await impl.run(
+        {
+          kind: 'tests',
+          id: 'real-skipped',
+          runner: 'node-test-real',
+          timeoutMs: 15_000,
+          forbidSkipped: true,
+        },
+        input,
+        NEVER,
+      )
+      expect(realSkipped.passed).toBe(false)
+      expect(realSkipped.detail?.['reason']).toContain('forbidSkipped')
+    })
+  })
+
+  it('tests check: forbidSkipped em advisory avisa sem reprovar; em off nem olha', async () => {
+    await withTempDir(async (dir) => {
+      const task = makeTask()
+      const input: VerifyInput = {
+        contract: task.acceptance,
+        workspace: fakeWorkspace(dir, task),
+        task,
+      }
+      const realSkippedCmd =
+        "node -e \"console.log('tests 3'); console.log('pass 1'); console.log('skipped 2'); console.log('todo 0')\""
+      const check = {
+        kind: 'tests' as const,
+        id: 'skipped',
+        runner: 'r',
+        timeoutMs: 15_000,
+        forbidSkipped: true,
+      }
+      const implWith = (severity: 'advisory' | 'off'): ReturnType<typeof testsCheckImpl> =>
+        testsCheckImpl(
+          runner(),
+          fakeVcs,
+          () => realSkippedCmd,
+          undefined,
+          resolveValidationPolicy({ rules: { forbidSkipped: severity } }),
+        )
+
+      const advisory = await implWith('advisory').run(check, input, NEVER)
+      expect(advisory.passed).toBe(true)
+      expect(advisory.detail?.['reason']).toBeUndefined()
+      expect(advisory.detail?.['warnings']).toEqual([
+        'forbidSkipped: a suíte contém testes pulados',
+      ])
+
+      const off = await implWith('off').run(check, input, NEVER)
+      expect(off.passed).toBe(true)
+      expect(off.detail).toBeUndefined()
     })
   })
 
@@ -364,6 +461,135 @@ describe('checks', () => {
         0,
       )
       expect(big.passed).toBe(false)
+    })
+  })
+
+  describe('evaluateDiff x ValidationPolicy', () => {
+    const task = makeTask({ touches: ['src/**'] })
+    const input: VerifyInput = {
+      contract: task.acceptance,
+      workspace: fakeWorkspace('/x', task),
+      task,
+    }
+    const check: DiffCheck = { kind: 'diff', id: 'd', timeoutMs: 1_000 }
+
+    /** Um arquivo dentro do escopo e outro fora — dispara `scope`. */
+    const outOfScope: DiffSummary = {
+      files: [
+        { path: 'src/a.ts', added: 1, removed: 0, status: 'modified' },
+        { path: 'docs/leia.md', added: 1, removed: 0, status: 'modified' },
+      ],
+      totalAdded: 2,
+      totalRemoved: 0,
+      isEmpty: false,
+    }
+
+    function warningsOf(result: { detail?: Readonly<Record<string, unknown>> }): string[] {
+      const warnings = result.detail?.['warnings']
+      return Array.isArray(warnings) ? (warnings as string[]) : []
+    }
+
+    it('scope blocking reprova e registra em problems', () => {
+      const policy = resolveValidationPolicy({ rules: { scope: 'blocking' } })
+      const result = evaluateDiff(check, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(false)
+      expect(result.detail?.['problems']).toEqual(['diff fora do escopo declarado: docs/leia.md'])
+      expect(warningsOf(result)).toEqual([])
+    })
+
+    it('scope advisory mantém passed=true e preserva o aviso', () => {
+      const policy = resolveValidationPolicy({ rules: { scope: 'advisory' } })
+      const result = evaluateDiff(check, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(true)
+      expect(result.detail?.['problems']).toBeUndefined()
+      expect(warningsOf(result)).toEqual(['diff fora do escopo declarado: docs/leia.md'])
+    })
+
+    it('scope off não avalia nem avisa', () => {
+      const policy = resolveValidationPolicy({ rules: { scope: 'off' } })
+      const result = evaluateDiff(check, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(true)
+      expect(result.detail?.['problems']).toBeUndefined()
+      expect(result.detail?.['warnings']).toBeUndefined()
+    })
+
+    const tooBig: DiffCheck = { ...check, maxFiles: 1, maxLines: 1 }
+
+    it('diffSize blocking reprova por arquivos e por linhas', () => {
+      const policy = resolveValidationPolicy({ rules: { diffSize: 'blocking', scope: 'off' } })
+      const result = evaluateDiff(tooBig, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(false)
+      expect(result.detail?.['problems']).toHaveLength(2)
+    })
+
+    it('diffSize advisory não reprova, só avisa', () => {
+      const policy = resolveValidationPolicy({ rules: { diffSize: 'advisory', scope: 'off' } })
+      const result = evaluateDiff(tooBig, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(true)
+      expect(warningsOf(result)).toHaveLength(2)
+    })
+
+    it('diffSize off ignora os limites do check', () => {
+      const policy = resolveValidationPolicy({ rules: { diffSize: 'off', scope: 'off' } })
+      const result = evaluateDiff(tooBig, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(true)
+      expect(result.detail?.['warnings']).toBeUndefined()
+    })
+
+    it('advisory e blocking convivem: só o bloqueante reprova', () => {
+      const policy = resolveValidationPolicy({ rules: { diffSize: 'advisory', scope: 'blocking' } })
+      const result = evaluateDiff(tooBig, input, outOfScope, 0, policy)
+      expect(result.passed).toBe(false)
+      expect(result.detail?.['problems']).toHaveLength(1)
+      expect(warningsOf(result)).toHaveLength(2)
+    })
+
+    it('policy desligada por inteiro aprova mesmo diff vazio', () => {
+      const policy = resolveValidationPolicy({ enabled: false })
+      const result = evaluateDiff(
+        { ...check, requireNonEmpty: true },
+        input,
+        { files: [], totalAdded: 0, totalRemoved: 0, isEmpty: true },
+        0,
+        policy,
+      )
+      expect(result.passed).toBe(true)
+      expect(result.detail?.['warnings']).toBeUndefined()
+    })
+
+    it('emptyDiff advisory avisa sem reprovar', () => {
+      const policy = resolveValidationPolicy({ rules: { emptyDiff: 'advisory' } })
+      const result = evaluateDiff(
+        { ...check, requireNonEmpty: true },
+        input,
+        { files: [], totalAdded: 0, totalRemoved: 0, isEmpty: true },
+        0,
+        policy,
+      )
+      expect(result.passed).toBe(true)
+      expect(warningsOf(result)).toEqual(['diff vazio — nenhum arquivo foi alterado'])
+    })
+
+    it('forbiddenPaths respeita a severidade', () => {
+      const guarded: DiffCheck = { ...check, forbidPaths: ['docs/**'] }
+      const advisory = evaluateDiff(
+        guarded,
+        input,
+        outOfScope,
+        0,
+        resolveValidationPolicy({ rules: { forbiddenPaths: 'advisory', scope: 'off' } }),
+      )
+      expect(advisory.passed).toBe(true)
+      expect(warningsOf(advisory)[0]).toContain('caminhos proibidos')
+
+      const off = evaluateDiff(
+        guarded,
+        input,
+        outOfScope,
+        0,
+        resolveValidationPolicy({ rules: { forbiddenPaths: 'off', scope: 'off' } }),
+      )
+      expect(off.detail?.['warnings']).toBeUndefined()
     })
   })
 })

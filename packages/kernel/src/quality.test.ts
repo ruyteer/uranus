@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { FindingsOutput } from '@uranus/core'
-import { unwrap } from '@uranus/core'
+import type { FindingsOutput, GatePolicy } from '@uranus/core'
+import { DEFAULT_GATE_POLICY, unwrap } from '@uranus/core'
 import { createGitRepo, gitIn, withTempDir } from '@uranus/testkit'
 import { makeTestStack } from './test-stack.js'
 import { renderDiff } from './quality/gate-pipeline.js'
@@ -110,7 +110,13 @@ describe('cadeia de qualidade (DoD Fase 5)', () => {
     })
   }, 90_000)
 
-  it('achado de severidade baixa NÃO bloqueia, mas vira acompanhamento', async () => {
+  it('achado de severidade baixa NÃO bloqueia e NÃO vira task: vira registro', async () => {
+    // O caso que motivou a contenção. Este teste já afirmou o contrário —
+    // `medium`/`naming-convention` virava task, com worktree, sessão de modelo
+    // e PR próprios, para renomear uma variável. E a task derivada era
+    // revisada de novo, gerando mais achados. Hoje o achado é registrado, e
+    // quem decide se vale trabalho é o humano lendo o backlog.
+    const adiados: { reason: string; title: string }[] = []
     await withTempDir(async (dir) => {
       repoComTestes(dir)
       const stack = await makeTestStack(
@@ -132,7 +138,13 @@ describe('cadeia de qualidade (DoD Fase 5)', () => {
           },
           { text: SEM_ACHADOS },
         ],
-        { gates: ['reviewer', 'security'] },
+        {
+          gates: ['reviewer', 'security'],
+          onDeferredFinding: ({ deferred }): Promise<void> => {
+            adiados.push({ reason: deferred.reason, title: deferred.finding.title })
+            return Promise.resolve()
+          },
+        },
       )
       try {
         const task = await stack.enqueue({
@@ -152,11 +164,15 @@ describe('cadeia de qualidade (DoD Fase 5)', () => {
         expect(final?.state).toBe('done')
         expect(gitIn(dir, 'log', '--all', '--oneline').split('\n').length).toBeGreaterThan(1)
 
-        // Mas o achado não se perdeu: virou task de acompanhamento.
+        // Nenhuma task derivada: a fila tem só a task que o humano pediu.
         const todas = await stack.state.tasks.all()
-        const followUp = todas.find((t) => t.labels.includes('achado:reviewer'))
-        expect(followUp).toBeDefined()
-        expect(followUp!.title).toContain('naming-convention')
+        expect(todas.filter((t) => t.lineage !== undefined)).toEqual([])
+        expect(todas.find((t) => t.labels.includes('achado:reviewer'))).toBeUndefined()
+
+        // Mas o achado não se perdeu — foi registrado, com o motivo.
+        expect(adiados).toEqual([
+          { reason: 'severity', title: 'Nome de variável pouco descritivo' },
+        ])
       } finally {
         await stack.close()
       }
@@ -200,9 +216,16 @@ describe('cadeia de qualidade (DoD Fase 5)', () => {
         unwrap(await stack.kernel.start({ projectId: stack.project.id }))
         await stack.kernel.wait()
 
-        // 2 sessões: Executor + Reviewer. O Security foi pulado — rodar custaria
-        // dinheiro para descobrir algo que não muda a decisão.
-        expect(stack.provider.sessions).toHaveLength(2)
+        // O Security foi pulado no gate pipeline — rodar custaria dinheiro
+        // para descobrir algo que não muda a decisão (já bloqueada pelo
+        // Reviewer). Verifica por agente, não pela contagem total de sessões:
+        // o achado crítico corretamente vira uma task de acompanhamento, que
+        // por sua vez tem sua própria sessão de Executor — 3 sessões no
+        // total (Executor + Reviewer + Executor da task de acompanhamento),
+        // nenhuma delas do Security.
+        const agents = stack.provider.sessions.map((s) => s.metadata['agent'])
+        expect(agents).not.toContain('security')
+        expect(agents.filter((a) => a === 'reviewer')).toHaveLength(1)
       } finally {
         await stack.close()
       }
@@ -356,4 +379,188 @@ describe('renderDiff', () => {
     const text = renderDiff({ files, totalAdded: 60, totalRemoved: 0, isEmpty: false }, 40)
     expect(text).toContain('e mais 20 arquivo(s)')
   })
+})
+
+describe('contenção da cadeia de correções', () => {
+  /** Política permissiva de propósito: é a que fazia a fila crescer sozinha. */
+  const ACOMPANHA_MEDIUM: GatePolicy = {
+    ...DEFAULT_GATE_POLICY,
+    followUpAt: 'medium',
+    followUpDenyCategories: [],
+  }
+
+  function achadoMedio(file: string, titulo: string): string {
+    return findings([
+      {
+        severity: 'medium',
+        category: 'perf',
+        title: titulo,
+        detail: `Trabalho redundante em ${file}, refeito a cada chamada sem necessidade.`,
+        file,
+        suggestion: 'Memoizar o cálculo.',
+      },
+    ])
+  }
+
+  it('correção de correção não gera correção: a árvore tem profundidade máxima', async () => {
+    const adiados: { reason: string; title: string }[] = []
+    await withTempDir(async (dir) => {
+      repoComTestes(dir)
+      const stack = await makeTestStack(
+        dir,
+        [
+          // ── Task do humano ────────────────────────────────────────────────
+          { writes: { 'src/db.mjs': 'export const consulta = (id) => [id]\n' } },
+          { text: achadoMedio('src/db.mjs', 'Consulta refeita a cada chamada') },
+          { text: SEM_ACHADOS },
+          // ── Correção derivada (geração 1) ─────────────────────────────────
+          { writes: { 'src/db.mjs': 'const cache = []\nexport const consulta = () => cache\n' } },
+          // O reviewer acha algo NOVO na correção. Antes, isto virava geração
+          // 2 — e a geração 2 viraria a 3, sem fim.
+          { text: achadoMedio('src/cache.mjs', 'Cache sem limite de tamanho') },
+          { text: SEM_ACHADOS },
+        ],
+        {
+          gates: ['reviewer', 'security'],
+          gatePolicy: ACOMPANHA_MEDIUM,
+          onDeferredFinding: ({ deferred }): Promise<void> => {
+            adiados.push({ reason: deferred.reason, title: deferred.finding.title })
+            return Promise.resolve()
+          },
+        },
+      )
+      try {
+        await stack.enqueue({
+          title: 'Adicionar consulta',
+          touches: ['src/**'],
+          acceptance: {
+            checks: [{ kind: 'command', id: 'suite', run: 'node --test', timeoutMs: 120_000 }],
+            requireAll: true,
+          },
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const todas = await stack.state.tasks.all()
+        // Duas tasks, não uma cascata: a do humano e UMA correção.
+        expect(todas).toHaveLength(2)
+
+        const derivadas = todas.filter((t) => t.lineage !== undefined)
+        expect(derivadas).toHaveLength(1)
+        expect(derivadas[0]!.lineage!.generation).toBe(1)
+        expect(derivadas[0]!.lineage!.raisedBy).toBe('reviewer')
+        // A raiz aponta para a task que o humano pediu, não para a intermediária.
+        expect(derivadas[0]!.lineage!.rootTaskId).toBe(
+          todas.find((t) => t.lineage === undefined)!.id,
+        )
+
+        // O achado da geração 2 não sumiu: virou registro, com o motivo.
+        expect(adiados).toEqual([{ reason: 'generation', title: 'Cache sem limite de tamanho' }])
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 120_000)
+
+  it('o mesmo achado, apontado de novo, não vira uma segunda task', async () => {
+    const adiados: string[] = []
+    await withTempDir(async (dir) => {
+      repoComTestes(dir)
+      // O reviewer repete a MESMA queixa na revisão da correção. Sem
+      // fingerprint isso seria uma task nova a cada rodada — o loop clássico
+      // de "ele fica achando o mesmo problema pra sempre".
+      const mesmoAchado = achadoMedio('src/db.mjs', 'Consulta refeita a cada chamada')
+      const stack = await makeTestStack(
+        dir,
+        [
+          { writes: { 'src/db.mjs': 'export const consulta = (id) => [id]\n' } },
+          { text: mesmoAchado },
+          { text: SEM_ACHADOS },
+          { writes: { 'src/db.mjs': 'const c = []\nexport const consulta = () => c\n' } },
+          { text: mesmoAchado },
+          { text: SEM_ACHADOS },
+        ],
+        {
+          gates: ['reviewer', 'security'],
+          gatePolicy: { ...ACOMPANHA_MEDIUM, maxGeneration: 3 },
+          onDeferredFinding: ({ deferred }): Promise<void> => {
+            adiados.push(deferred.reason)
+            return Promise.resolve()
+          },
+        },
+      )
+      try {
+        await stack.enqueue({
+          title: 'Adicionar consulta',
+          touches: ['src/**'],
+          acceptance: {
+            checks: [{ kind: 'command', id: 'suite', run: 'node --test', timeoutMs: 120_000 }],
+            requireAll: true,
+          },
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const todas = await stack.state.tasks.all()
+        expect(todas.filter((t) => t.lineage !== undefined)).toHaveLength(1)
+        expect(adiados).toEqual(['duplicate'])
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 120_000)
+
+  it('o teto por run corta a derivação mesmo com achados legítimos', async () => {
+    const adiados: string[] = []
+    await withTempDir(async (dir) => {
+      repoComTestes(dir)
+      const stack = await makeTestStack(
+        dir,
+        [
+          { writes: { 'src/db.mjs': 'export const consulta = (id) => [id]\n' } },
+          {
+            text: findings(
+              ['a', 'b', 'c', 'd'].map((letra) => ({
+                severity: 'medium' as const,
+                category: 'perf',
+                title: `Trabalho redundante em ${letra}`,
+                detail: `A função em src/${letra}.mjs recalcula o mesmo valor a cada chamada.`,
+                file: `src/${letra}.mjs`,
+              })),
+            ),
+          },
+          { text: SEM_ACHADOS },
+        ],
+        {
+          gates: ['reviewer', 'security'],
+          gatePolicy: { ...ACOMPANHA_MEDIUM, maxFollowUpsPerRun: 2 },
+          onDeferredFinding: ({ deferred }): Promise<void> => {
+            adiados.push(deferred.reason)
+            return Promise.resolve()
+          },
+        },
+      )
+      try {
+        await stack.enqueue({
+          title: 'Adicionar consulta',
+          touches: ['src/**'],
+          acceptance: {
+            checks: [{ kind: 'command', id: 'suite', run: 'node --test', timeoutMs: 120_000 }],
+            requireAll: true,
+          },
+        })
+
+        unwrap(await stack.kernel.start({ projectId: stack.project.id }))
+        await stack.kernel.wait()
+
+        const todas = await stack.state.tasks.all()
+        expect(todas.filter((t) => t.lineage !== undefined)).toHaveLength(2)
+        expect(adiados).toEqual(['run-budget', 'run-budget'])
+      } finally {
+        await stack.close()
+      }
+    })
+  }, 120_000)
 })

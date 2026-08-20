@@ -121,6 +121,41 @@ export const MIGRATIONS: readonly Migration[] = [
       DROP TABLE IF EXISTS schema_migrations;
     `,
   },
+  {
+    version: 2,
+    name: 'task_lineage',
+    // Ascendência das tasks derivadas de achado. Sem persistir isto, o teto de
+    // geração se perde a cada restart e a deduplicação só valeria dentro de um
+    // run — que é exatamente onde ela menos importa. Ver `TaskLineage`.
+    up: `
+      ALTER TABLE tasks ADD COLUMN lineage TEXT;
+    `,
+    // Sem `down`: a coluna é aditiva e nula por padrão, então o código da v1
+    // roda intacto com ela presente. Reverter não teria o que desfazer.
+  },
+  {
+    version: 3,
+    name: 'task_repair_attempts',
+    // Contador de reparos dirigidos, separado de `attempts`. O `DEFAULT 0` não é
+    // detalhe de estilo: é o que faz uma linha gravada antes desta migração ler
+    // como "nenhum reparo" em vez de NULL — banco que já existe continua válido
+    // sem passo de backfill. Ver `Task.repairAttempts`.
+    up: `
+      ALTER TABLE tasks ADD COLUMN repair_attempts INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    version: 4,
+    name: 'task_backlog_item',
+    // Vínculo task → item do backlog. Sem persistir, o `backlogItemId` que o
+    // Planner grava morre no primeiro `save()` e o kernel nunca descobre que a
+    // task concluída pertencia a um item — o item jamais fecharia sozinho.
+    // Aditiva e nula por padrão: task criada à mão continua sem dono.
+    up: `
+      ALTER TABLE tasks ADD COLUMN backlog_item_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_tasks_backlog_item ON tasks(backlog_item_id);
+    `,
+  },
 ]
 
 export interface MigrationResult {

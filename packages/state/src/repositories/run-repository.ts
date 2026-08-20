@@ -18,6 +18,7 @@ const COLUMNS = 'id, project_id, started_at, finished_at, status, tick, stop_rea
 
 /** Runs cujo processo morreu sem transição terminal. Entrada da recuperação (INV-4). */
 const UNFINISHED_STATES = ['running', 'paused', 'stopping'] as const
+const FINISHED_STATES = ['completed', 'failed'] as const
 
 export function createRunRepository(db: SqliteDriver): RunRepository {
   const upsert = db.prepare(`
@@ -33,6 +34,9 @@ export function createRunRepository(db: SqliteDriver): RunRepository {
   const selectLatest = db.prepare(`SELECT ${COLUMNS} FROM runs ORDER BY started_at DESC LIMIT 1`)
   const selectUnfinished = db.prepare(
     `SELECT ${COLUMNS} FROM runs WHERE status IN (${UNFINISHED_STATES.map(() => '?').join(', ')}) ORDER BY started_at ASC`,
+  )
+  const selectFinishedDesc = db.prepare(
+    `SELECT id FROM runs WHERE status IN (${FINISHED_STATES.map(() => '?').join(', ')}) ORDER BY started_at DESC`,
   )
 
   return {
@@ -68,6 +72,12 @@ export function createRunRepository(db: SqliteDriver): RunRepository {
 
     unfinished(): Promise<readonly Run[]> {
       return Promise.resolve(selectUnfinished.all<RunRow>(...UNFINISHED_STATES).map(toRun))
+    },
+
+    oldFinished(keepMostRecent: number): Promise<readonly RunId[]> {
+      const rows = selectFinishedDesc.all<Pick<RunRow, 'id'>>(...FINISHED_STATES)
+      const stale = rows.slice(Math.max(0, keepMostRecent))
+      return Promise.resolve(stale.map((row) => row.id as RunId))
     },
   }
 }

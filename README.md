@@ -1,94 +1,99 @@
 # Uranus
 
-> **Agentic Coding Harness Framework** — o modelo de IA é o executor; o Uranus é o controlador.
+Uranus é um framework que orquestra modelos de IA capazes de editar código (Claude Code, e no
+futuro Codex, GPT e Gemini) para trabalhar em projetos de software com supervisão humana.
 
-O Uranus orquestra modelos capazes de editar código (Claude Code, e futuramente Codex, GPT,
-Gemini) para trabalhar continuamente em projetos de software sob supervisão humana. Todo o
-raciocínio de controle — o que fazer, em que ordem, com qual contexto, se deu certo — pertence a
-código determinístico, não ao modelo.
+A ideia central é simples: o modelo de IA faz o trabalho de programar, mas quem decide o que fazer,
+em que ordem, com qual contexto e se o resultado ficou bom é sempre código determinístico, nunca o
+próprio modelo. Isso torna o processo previsível, auditável e reproduzível.
 
-**Status:** Fases 1–5 e 8 concluídas. Funciona de ponta a ponta: item de backlog em prosa → plano
-validado → tasks → implementação em worktree isolado → verificação por testes → revisão de
-qualidade → commit → PR, com recuperação exata após interrupção. Roda com Claude Code ou com
-**modelos locais** (Ollama, LM Studio, llama.cpp) e serviços compatíveis com a API da OpenAI.
+**Status atual:** as fases 1 a 8 estão concluídas e a fase 9 está em andamento. O Uranus já funciona
+de ponta a ponta: você escreve um pedido em texto livre, ele vira um plano validado, o plano vira
+tasks, cada task é implementada num ambiente isolado, verificada por testes, revisada por qualidade
+e vira um commit e um Pull Request. Se o processo for interrompido, ele retoma exatamente de onde
+parou. Funciona com o Claude Code ou com modelos locais (Ollama, LM Studio, llama.cpp) e qualquer
+serviço compatível com a API da OpenAI. Também roda várias tasks em paralelo sem risco de conflito
+entre elas.
 
 ---
 
 ## Índice
 
-- [Por que existe](#por-que-existe)
-- [Instalação](#instalação)
-- [Começando em 5 minutos](#começando-em-5-minutos)
-- [Referência de comandos](#referência-de-comandos)
-- [Como escrever uma task](#como-escrever-uma-task)
-- [Configuração](#configuração)
-- [Modelos locais e outros providers](#modelos-locais-e-outros-providers)
-- [Como funciona](#como-funciona)
-- [Agentes](#agentes)
-- [Plugins](#plugins)
-- [Dashboard e custo](#dashboard-e-custo)
-- [Solução de problemas](#solução-de-problemas)
-- [Desenvolvimento do framework](#desenvolvimento-do-framework)
+1. [Por que o Uranus existe](#por-que-o-uranus-existe)
+2. [Instalação](#instalação)
+3. [Começando em 5 minutos](#começando-em-5-minutos)
+4. [Referência de comandos](#referência-de-comandos)
+5. [Como escrever uma task](#como-escrever-uma-task)
+6. [Configuração](#configuração)
+7. [Modelos locais e outros provedores](#modelos-locais-e-outros-provedores)
+8. [Como o Uranus funciona por dentro](#como-o-uranus-funciona-por-dentro)
+9. [Múltiplos projetos](#múltiplos-projetos)
+10. [Agentes](#agentes)
+11. [Plugins](#plugins)
+12. [Painel e custo](#painel-e-custo)
+13. [Solução de problemas](#solução-de-problemas)
+14. [Desenvolvendo o próprio framework](#desenvolvendo-o-próprio-framework)
 
 ---
 
-## Por que existe
+## Por que o Uranus existe
 
-A maioria dos agentes de código falha por um motivo: **entrega o controle de fluxo ao modelo**. O
-modelo decide o que fazer, decide quando terminou, e declara sucesso. O resultado é
-não-determinístico, não-auditável e não-reproduzível.
+A maioria dos agentes de código tem o mesmo problema: eles deixam o próprio modelo decidir o que
+fazer, quando terminou e se o resultado é bom. Isso funciona às vezes, mas não é confiável: o
+resultado muda a cada execução, ninguém consegue auditar a decisão e ela não é reproduzível.
 
-O Uranus inverte isso:
+O Uranus separa as duas coisas. O modelo transforma intenção em código (é bom nisso). Todo o resto,
+como decidir o que fazer agora, em que ordem, com qual contexto, com quais permissões e se deu
+certo, é responsabilidade de código comum, testável e previsível.
 
-| Responsabilidade                    | Dono                     |
-| ----------------------------------- | ------------------------ |
-| O que fazer agora                   | **Kernel**               |
-| Em que ordem                        | **Scheduler**            |
-| Com qual contexto                   | **Context**              |
-| Com quais permissões                | **Broker**               |
-| Se deu certo                        | **Verifier** (exit code) |
-| Se pode integrar                    | **Humano / gates**       |
-| _Como_ transformar intenção em diff | **Modelo**               |
+Isso se apoia em seis princípios:
 
-### Os seis princípios
+1. **Sucesso é provado por código.** Toda task tem um contrato de aceite que roda de verdade. O
+   veredito é o resultado desse teste, nunca a opinião do modelo sobre o próprio trabalho.
+2. **O modelo nunca decide o fluxo.** Tudo que o modelo produz é tratado como dado. Planos e
+   descobertas passam por validação antes de virarem trabalho real.
+3. **Todo efeito colateral vira um evento.** Existe um log que registra tudo que aconteceu, e esse
+   log é a fonte da verdade.
+4. **Todo ciclo termina em um ponto de recuperação.** Se o processo for interrompido, o máximo que
+   se perde é um passo.
+5. **A escrita de código só acontece num ambiente isolado.** A integração com o projeto principal
+   acontece por Pull Request.
+6. **Orçamento é um limite rígido.** Dinheiro, tokens e tempo são verificados antes de gastar, não
+   depois.
 
-1. **Sucesso é provado por código.** Toda task carrega um contrato de aceite executável; o veredito
-   é o exit code, nunca a autoavaliação do modelo.
-2. **O modelo nunca decide fluxo.** Saída de modelo é dado; planos e achados passam por validação
-   determinística antes de virarem trabalho ou decisão.
-3. **Todo efeito colateral é um evento.** Log append-only como fonte da verdade.
-4. **Todo ciclo termina em checkpoint.** Interrupção nunca perde mais de um tick.
-5. **Escrita apenas em git worktree isolado.** Integração via Pull Request.
-6. **Orçamento é limite duro.** USD, tokens e tempo — verificados _antes_ de gastar.
-
-Detalhes em [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md).
+Os detalhes de arquitetura estão em [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md).
 
 ---
 
 ## Instalação
 
-**Requisitos:** Node ≥ 22, git ≥ 2.20, e **um provider de modelo**: o
-[Claude Code CLI](https://claude.com/claude-code) autenticado, ou qualquer servidor compatível com
-a API da OpenAI — inclusive local (ver [Modelos locais](#modelos-locais-e-outros-providers)).
-O `gh` (GitHub CLI) é opcional — sem ele, os commits ficam na branch local em vez de virarem PR.
+Você precisa de Node 22 ou mais recente, git 2.20 ou mais recente, e pelo menos um provedor de
+modelo: o [Claude Code CLI](https://claude.com/claude-code) autenticado, ou qualquer servidor
+compatível com a API da OpenAI, incluindo servidores locais (veja a seção
+[Modelos locais](#modelos-locais-e-outros-provedores)). O `gh` (GitHub CLI) é opcional: sem ele, os
+commits ficam numa branch local em vez de virarem Pull Request automaticamente.
 
 ```bash
-git clone https://github.com/ruyteer/uranus.git && cd uranus && pnpm install && pnpm build
+git clone https://github.com/ruyteer/uranus.git
+cd uranus
+pnpm install
+pnpm build
 ```
 
-Deixe o comando `uranus` disponível globalmente:
+Deixe o comando `uranus` disponível em qualquer lugar do seu computador:
 
 ```bash
-cd packages/cli && npm link
+cd packages/cli
+npm link
 ```
 
-Autentique o Claude Code CLI (uma vez só — o login do app desktop é separado):
+Autentique o Claude Code CLI (só precisa fazer isso uma vez):
 
 ```bash
 claude /login
 ```
 
-Confirme que está tudo no lugar:
+Confirme que tudo está funcionando:
 
 ```bash
 claude --version
@@ -100,13 +105,15 @@ claude --version
 
 ### 1. Inicialize no seu projeto
 
-O projeto precisa ser um repositório git com a árvore de trabalho limpa.
+O projeto precisa ser um repositório git com a árvore de trabalho limpa (sem mudanças pendentes).
 
 ```bash
-cd meu-projeto && uranus init
+cd meu-projeto
+uranus init
 ```
 
-Isso cria `.uranus/` com a configuração. O diretório já nasce invisível para o git do seu projeto.
+Isso cria uma pasta `.uranus/` com a configuração padrão. Essa pasta já nasce ignorada pelo git do
+seu projeto.
 
 ### 2. Verifique o ambiente
 
@@ -114,7 +121,8 @@ Isso cria `.uranus/` com a configuração. O diretório já nasce invisível par
 uranus doctor
 ```
 
-Você deve ver `OK` para node, git, claude e config. `gh` como `AVISO` é aceitável.
+Você deve ver `OK` para node, git, claude e a configuração. Ver `AVISO` para o `gh` é normal se
+você não instalou o GitHub CLI.
 
 ### 3. Veja o que o Uranus entendeu do seu projeto
 
@@ -122,32 +130,32 @@ Você deve ver `OK` para node, git, claude e config. `gh` como `AVISO` é aceit�
 uranus context show
 ```
 
-O digest é montado automaticamente: linguagens, frameworks, runner de testes, CI, banco,
-convenções. **Preste atenção no "Sinal de verificação"** — abaixo de 30/100 o Uranus entra em modo
-restrito e só aceita tasks que construam testes, porque sem eles não há como provar que o código
-funciona.
+Esse comando mostra um resumo automático do seu projeto: linguagens, frameworks, como rodar os
+testes, se tem CI, banco de dados, convenções de código. Preste atenção no "sinal de verificação":
+se ele estiver abaixo de 30 de 100, o Uranus entra em modo restrito e só aceita tasks que
+construam testes, porque sem testes não há como provar que o código funciona.
 
-### 4. Descreva o que você quer, em prosa
+### 4. Descreva o que você quer, em texto livre
 
 ```bash
 uranus backlog add "Adicionar exportação em CSV" --body "O relatório hoje só exporta PDF. Quero também CSV, com as mesmas colunas e um teste cobrindo."
 ```
 
-### 5. Deixe o Uranus decompor em tasks
+### 5. Deixe o Uranus transformar isso em tasks
 
 ```bash
 uranus backlog list
 ```
 
-Pegue o id do item e planeje:
+Pegue o id do item que você criou e peça um plano:
 
 ```bash
 uranus plan adicionar-exportacao-em-csv-abc123
 ```
 
-O Planner propõe um plano; um **validador determinístico** o aceita ou recusa com motivos
-objetivos (escopo amplo demais, contrato de aceite que não prova nada, dependência inexistente).
-Plano recusado não toca no seu repositório.
+Um agente chamado Planner propõe um plano de tasks, e um validador determinístico aceita ou recusa
+esse plano com motivos objetivos (escopo grande demais, contrato de aceite fraco, dependência que
+não existe). Um plano recusado nunca chega a tocar no seu código.
 
 ### 6. Trabalhe
 
@@ -155,20 +163,18 @@ Plano recusado não toca no seu repositório.
 uranus start
 ```
 
-O Uranus vai, para cada task: criar um worktree isolado, invocar o Claude Code, rodar seus testes,
-passar pela revisão de qualidade, comitar numa branch `uranus/...` e abrir um PR draft.
+Para cada task, o Uranus cria um ambiente isolado, chama o Claude Code, roda os testes do seu
+projeto, passa pela revisão de qualidade, faz um commit numa branch própria e abre um Pull Request
+como rascunho.
 
 ### 7. Acompanhe
 
 ```bash
 uranus status
-```
-
-```bash
 uranus task list
 ```
 
-Se você interromper com `Ctrl+C`, retome exatamente de onde parou:
+Se você interromper com `Ctrl+C`, pode retomar exatamente de onde parou:
 
 ```bash
 uranus start --resume run_01ABC...
@@ -180,76 +186,92 @@ uranus start --resume run_01ABC...
 
 ### Projeto
 
-| Comando         | O que faz                                                            |
-| --------------- | -------------------------------------------------------------------- |
-| `uranus init`   | Cria `.uranus/` com configuração padrão. Aceita `--name <nome>`.     |
-| `uranus doctor` | Diagnostica ambiente: node, git, Claude Code CLI, gh e configuração. |
-| `uranus status` | Estado da fila e do último run.                                      |
-| `uranus logs`   | Últimos eventos do log. Aceita `--tail <n>`.                         |
+| Comando | O que faz |
+| --- | --- |
+| `uranus init` | Cria `.uranus/` com a configuração padrão. Aceita `--name <nome>`. |
+| `uranus doctor` | Verifica o ambiente: node, git, Claude Code CLI, gh e configuração. |
+| `uranus status` | Mostra o estado da fila e do último run. |
+| `uranus logs` | Mostra os últimos eventos do log. Aceita `--tail <n>`. |
 
 ### Backlog e planejamento
 
-| Comando                              | O que faz                                                      |
-| ------------------------------------ | -------------------------------------------------------------- |
-| `uranus backlog add "<título>"`      | Adiciona item. Aceita `--body`, `--label`, `--priority 0-100`. |
-| `uranus backlog list`                | Lista itens com estado e prioridade.                           |
-| `uranus backlog import <arquivo.md>` | Importa de Markdown (checkboxes `- [ ]` e seções `##`).        |
-| `uranus plan <itemId>`               | Decompõe um item em tasks verificáveis. **Custa tokens.**      |
+| Comando | O que faz |
+| --- | --- |
+| `uranus backlog add "<título>"` | Adiciona um item. Aceita `--body`, `--label` e `--priority 0 a 100`. |
+| `uranus backlog list` | Lista os itens com estado e prioridade. |
+| `uranus backlog import <arquivo.md>` | Importa itens de um arquivo Markdown. |
+| `uranus plan <itemId>` | Transforma um item em tasks verificáveis. Isso gasta tokens. |
 
-O backlog fica em `.uranus/backlog/*.yaml` — edite à mão se preferir.
+O backlog fica salvo em `.uranus/backlog/*.yaml`. Você pode editar esses arquivos à mão se quiser.
 
 ### Tasks
 
-| Comando                         | O que faz                                              |
-| ------------------------------- | ------------------------------------------------------ |
-| `uranus task add --file <yaml>` | Adiciona uma task direto, sem passar pelo Planner.     |
-| `uranus task list`              | Lista tasks, estados, tentativas e motivo de bloqueio. |
-| `uranus task why <taskId>`      | Explica por que a task está (ou não) sendo escolhida.  |
-| `uranus task retry <taskId>`    | Devolve uma task bloqueada para a fila.                |
+| Comando | O que faz |
+| --- | --- |
+| `uranus task add --file <yaml>` | Adiciona uma task direto, sem passar pelo Planner. |
+| `uranus task list` | Lista as tasks, seus estados, tentativas e motivo de bloqueio. |
+| `uranus task list --active` | Mostra só o que ainda vai acontecer ou está travado. |
+| `uranus task why <taskId>` | Explica por que a task está (ou não está) sendo escolhida. |
+| `uranus task retry <taskId>` | Devolve uma task bloqueada para a fila. |
+| `uranus task prune` | Remove tasks concluídas antigas do estado ativo (não apaga o histórico). |
+
+Quando a lista de tasks fica difícil de ler, use os filtros:
+
+```bash
+uranus task list --active
+uranus task list --state done --limit 20
+uranus task prune              # mostra o que seria removido, sem remover
+uranus task prune --yes        # remove de verdade
+```
+
+O comando `prune` nunca remove uma task que está ativa no momento, uma task que ainda não rodou, ou
+uma task de que outra ainda depende. Ele sempre te avisa quando isso acontece. E remover uma task
+antiga da lista de tarefas não apaga o histórico dela: o registro completo continua no log de
+eventos em `.uranus/events/`, que nunca é podado.
 
 ### Execução
 
-| Comando                         | O que faz                                                      |
-| ------------------------------- | -------------------------------------------------------------- |
-| `uranus start`                  | Trabalha até drenar a fila. `Ctrl+C` interrompe com segurança. |
-| `uranus start --max-tasks <n>`  | Para após completar N tasks.                                   |
-| `uranus start --resume <runId>` | Retoma um run interrompido.                                    |
+| Comando | O que faz |
+| --- | --- |
+| `uranus start` | Trabalha até esvaziar a fila. `Ctrl+C` interrompe com segurança. |
+| `uranus start --max-tasks <n>` | Para depois de completar N tasks. |
+| `uranus start --resume <runId>` | Retoma um run que foi interrompido. |
 
 ### Contexto e memória
 
-| Comando                   | O que faz                                                   |
-| ------------------------- | ----------------------------------------------------------- |
-| `uranus context show`     | Digest do projeto: stack, testes, CI, sinal de verificação. |
-| `uranus context rebuild`  | Reconstrói o digest ignorando o cache.                      |
-| `uranus memory list`      | Lista memórias ativas. Aceita `--scope <escopo>`.           |
-| `uranus memory show <id>` | Mostra uma memória completa.                                |
-| `uranus memory compact`   | Revalida referências e compacta escopos cheios.             |
+| Comando | O que faz |
+| --- | --- |
+| `uranus context show` | Mostra o resumo do projeto: stack, testes, CI, sinal de verificação. |
+| `uranus context rebuild` | Reconstrói o resumo do zero, ignorando o cache. |
+| `uranus memory list` | Lista as memórias ativas. Aceita `--scope <escopo>`. |
+| `uranus memory show <id>` | Mostra uma memória completa. |
+| `uranus memory compact` | Revalida as memórias e compacta os escopos que estão cheios. |
 
-A memória fica em `.uranus/memory/<escopo>/*.md` — Markdown legível. **Edite à vontade:** o Uranus
-detecta a edição manual e respeita a sua correção.
+A memória fica em `.uranus/memory/<escopo>/*.md`, em Markdown legível. Você pode editar à vontade:
+o Uranus detecta a edição manual e respeita a sua correção.
 
 ### Plugins
 
-| Comando                     | O que faz                                                         |
-| --------------------------- | ----------------------------------------------------------------- |
-| `uranus plugin list`        | Quais plugins ativaram, quais não, e o motivo de cada um.         |
-| `uranus plugin info <id>`   | Manifesto, permissões pedidas e o que o plugin registrou de fato. |
-| `uranus plugin check <dir>` | Audita um plugin **antes** de instalar: permissões e capacidades. |
+| Comando | O que faz |
+| --- | --- |
+| `uranus plugin list` | Mostra quais plugins ativaram, quais não, e o motivo de cada um. |
+| `uranus plugin info <id>` | Mostra o manifesto, as permissões pedidas e o que o plugin registrou. |
+| `uranus plugin check <dir>` | Audita um plugin antes de instalar: permissões e capacidades. |
 
-### Dashboard e custo
+### Painel e custo
 
-| Comando                         | O que faz                                            |
-| ------------------------------- | ---------------------------------------------------- |
-| `uranus dashboard`              | Sobe o painel web em `localhost:4319`.               |
-| `uranus start --dashboard`      | Roda o kernel com o painel aberto ao lado.           |
-| `uranus cost`                   | Custo do processo por agente e por modelo.           |
+| Comando | O que faz |
+| --- | --- |
+| `uranus dashboard` | Sobe o painel web em `localhost:4319`. |
+| `uranus start --dashboard` | Roda o kernel com o painel aberto ao lado. |
+| `uranus cost` | Mostra o custo do processo, por agente e por modelo. |
 | `uranus cost reconcile <valor>` | Compara o total contabilizado com a sua fatura real. |
 
 ---
 
 ## Como escrever uma task
 
-Você pode pular o Planner e escrever a task direto. O arquivo é YAML:
+Você também pode pular o Planner e escrever a task direto, em YAML:
 
 ```yaml
 kind: feature # feature | bugfix | refactor | test | docs | chore | security | perf | deps | infra
@@ -259,18 +281,18 @@ intent: >
   com o id dado e retorna true, ou false se o id não existir. Cobrir com testes:
   remover existente, remover inexistente, e que list() reflete a remoção.
 
-# Globs que a task pode alterar. Mudanças fora daqui reprovam automaticamente.
+# Quais arquivos a task pode alterar. Mudança fora daqui é reprovada automaticamente.
 touches:
   - src/**
   - test/**
 
 maxAttempts: 3
 
-# O contrato de aceite é o coração do sistema. A task só vira `done` se TODOS
-# os checks bloqueantes passarem — nunca pela palavra do modelo.
+# O contrato de aceite é o coração do sistema. A task só vira "concluída" se
+# TODOS os testes abaixo passarem, nunca pela palavra do modelo.
 acceptance:
   checks:
-    - kind: command # roda um comando; o exit code decide
+    - kind: command # roda um comando; o resultado decide se passou
       id: suite-passa
       run: node --test
       timeoutMs: 120000
@@ -282,9 +304,9 @@ acceptance:
       matches: 'remove\('
       timeoutMs: 5000
 
-    - kind: diff # limites sobre o próprio diff
+    - kind: diff # limites sobre o próprio diff produzido
       id: escopo
-      requireNonEmpty: true # pega o caso "o modelo declarou sucesso sem mudar nada"
+      requireNonEmpty: true # pega o caso em que o modelo diz "pronto" sem mudar nada
       timeoutMs: 30000
 ```
 
@@ -292,24 +314,26 @@ acceptance:
 uranus task add --file minha-task.yaml
 ```
 
-### Tipos de check disponíveis
+### Tipos de teste disponíveis
 
-| Tipo       | Para que serve                                                             |
-| ---------- | -------------------------------------------------------------------------- |
-| `command`  | Roda um comando; passa se o exit code for o esperado (0 por padrão).       |
-| `tests`    | Roda a suíte por runner. `requireNewTests: true` exige teste novo no diff. |
-| `artifact` | Um arquivo deve (ou não) existir, e opcionalmente casar com uma regex.     |
-| `diff`     | Limites de tamanho, escopo e não-vazio sobre o diff produzido.             |
-| `coverage` | Cobertura mínima, global ou só do diff.                                    |
-| `schema`   | Valida a saída estruturada do agente contra um JSON Schema.                |
+| Tipo | Para que serve |
+| --- | --- |
+| `command` | Roda um comando qualquer; passa se o resultado for o esperado. |
+| `tests` | Roda a suíte de testes do projeto. Pode exigir teste novo no diff. |
+| `artifact` | Verifica se um arquivo existe e, se quiser, se bate com uma expressão. |
+| `diff` | Limites de tamanho, escopo e não vazio sobre o diff produzido. |
+| `coverage` | Cobertura mínima de testes, global ou só do que mudou. |
+| `schema` | Valida a saída estruturada do agente contra um schema JSON. |
 
-Qualquer check aceita `advisory: true` — ele registra o resultado mas **nunca bloqueia**.
+Qualquer teste pode receber `advisory: true`. Nesse caso, ele registra o resultado mas nunca
+bloqueia a task.
 
 ---
 
 ## Configuração
 
-Tudo em `.uranus/config.yaml`. Só o que você quiser mudar; o resto usa defaults seguros.
+Tudo fica em `.uranus/config.yaml`. Você só precisa declarar o que quer mudar, o resto usa valores
+padrão seguros.
 
 ```yaml
 version: 1
@@ -321,14 +345,31 @@ project:
     branchPrefix: 'uranus/'
 
 kernel:
-  concurrency: 1 # paralelismo real chega na Fase 9
-  maxAttemptsPerTask: 3
+  concurrency: 1 # mais que 1 roda tasks em paralelo, protegendo arquivos automaticamente
+  maxAttemptsPerTask: 10
   leaseTtlMs: 600000
 
-# INV-7: limite duro, não aviso. Verificado ANTES de gastar.
+# Quais validações o Uranus faz, e com que rigor. Tudo bloqueante por padrão.
+validations:
+  enabled: true
+  rules:
+    scope: blocking # diff fora dos arquivos declarados na task
+    diffSize: blocking # tamanho máximo de arquivos e linhas
+    forbiddenPaths: blocking
+    emptyDiff: blocking # o modelo disse "pronto" sem alterar nada
+    tests: blocking
+    requireNewTests: blocking
+    forbidSkipped: blocking
+    lint: blocking
+    types: blocking
+    schema: blocking
+  countTowardAttempts: false
+  maxRepairAttempts: 3
+
+# Limite duro de gasto, verificado antes de cada ação, não depois.
 budget:
   perRun: { usd: 25, tokens: 5000000, wallclockMs: 14400000 }
-  perTask: { usd: 3, tokens: 500000, wallclockMs: 1200000 } # comporta o maior agente do catálogo
+  perTask: { usd: 3, tokens: 500000, wallclockMs: 1200000 }
   onExhausted: pause # pause | stop | ask
 
 providers:
@@ -340,14 +381,12 @@ providers:
 
 context:
   budgetTokens: 120000
-  # Frações do orçamento por seção. A soma não pode passar de 1.0.
   sections: { digest: 0.15, code: 0.4, memory: 0.2, task: 0.15, error: 0.1 }
 
 scheduler:
-  # Ajustar prioridade é editar isto — nada recompila.
   weights:
     blocker-first: 10
-    starvation-guard: 8 # precisa ser > bug-priority, senão docs nunca rodam
+    starvation-guard: 8
     bug-priority: 6
     mix-quota: 3
   mix: { feature: 0.5, bugfix: 0.25, refactor: 0.15, docs: 0.1 }
@@ -361,8 +400,12 @@ quality:
     - { agent: security, enabled: true }
     - { agent: qa, enabled: false }
   blockAt: high # severidade mínima que impede a integração
-  followUpAt: medium # abaixo disso vira task de acompanhamento
-  escalationAgent: bug-hunter # para onde escalar após falhas repetidas
+  followUpAt: high # a partir dessa severidade, o achado vira task
+  followUp:
+    maxGeneration: 1 # correção de correção não gera nova correção
+    maxPerRun: 8 # teto de tasks derivadas por run
+    denyCategories: [] # vazio usa a lista padrão (naming, style, docs...)
+  escalationAgent: bug-hunter
 
 integration:
   strategy: pull-request # pull-request | branch-only | direct
@@ -372,37 +415,46 @@ integration:
 permissions:
   fsWrite: ['**']
   fsDeny: ['.git/**', '.env', '.env.*', '**/node_modules/**']
-  execAllow: [] # vazio = qualquer comando de verificação é suspeito
+  execAllow: []
 
 memory:
   maxRecordsPerScope: 200
   minConfidence: 0.3
 
+# Projetos vizinhos, como backend e frontend em repositórios separados, cada
+# um com seu próprio .uranus. A memória deles entra como contexto só de leitura.
+linkedProjects:
+  - path: ../core
+    alias: core
+    scopes: [convention, architecture]
+    limit: 6
+
 telemetry:
   logLevel: info # trace | debug | info | warn | error | silent
 ```
 
-Também dá para sobrescrever por variável de ambiente
-(`URANUS_BUDGET__PER_RUN__USD=5`) ou por config global em `~/.uranus/config.yaml`.
+Você também pode sobrescrever qualquer configuração por variável de ambiente
+(por exemplo, `URANUS_BUDGET__PER_RUN__USD=5`) ou por uma configuração global em
+`~/.uranus/config.yaml`.
 
 ---
 
-## Modelos locais e outros providers
+## Modelos locais e outros provedores
 
-O Uranus não depende do Claude Code. Qualquer servidor compatível com a API da OpenAI funciona —
-o que inclui **Ollama, LM Studio, llama.cpp e vLLM rodando na sua máquina**, além de OpenAI,
-OpenRouter, Groq e Gemini.
+O Uranus não depende do Claude Code. Qualquer servidor compatível com a API da OpenAI funciona,
+incluindo Ollama, LM Studio, llama.cpp e vLLM rodando na sua própria máquina, além de serviços como
+OpenAI, OpenRouter, Groq e Gemini.
 
-### Dois modos de provider
+### Dois modos de provedor
 
-|                          | `cli` (Claude Code) | `api` (todos os outros)          |
-| ------------------------ | ------------------- | -------------------------------- |
-| Quem edita os arquivos   | o CLI               | **o Uranus**                     |
-| Permissão verificada     | ao montar as flags  | **a cada chamada de ferramenta** |
-| Fonte de verdade do diff | `git diff`          | `git diff` (igual)               |
+|  | `cli` (Claude Code) | `api` (todos os outros) |
+| --- | --- | --- |
+| Quem edita os arquivos | O CLI da Claude | O próprio Uranus |
+| Quando a permissão é checada | Ao montar as instruções | A cada chamada de ferramenta |
+| Fonte da verdade do diff | `git diff` | `git diff` (igual) |
 
-O modo `api` é **estritamente mais seguro**: como o laço de ferramentas roda dentro do Uranus, uma
-escrita fora do escopo é barrada antes de acontecer, em vez de ser descoberta depois pelo `DiffCheck`.
+O modo `api` é mais seguro: como o loop de ferramentas roda dentro do próprio Uranus, uma escrita
+fora do escopo permitido é bloqueada antes de acontecer, em vez de ser descoberta depois.
 
 ### Configurando um modelo local
 
@@ -414,24 +466,50 @@ providers:
       mode: api
       preset: ollama
       model: qwen2.5-coder:14b
-      # baseUrl: http://127.0.0.1:11434/v1   # o padrão
+      # baseUrl: http://127.0.0.1:11434/v1   (esse já é o padrão)
 ```
 
-Presets disponíveis: `ollama`, `lmstudio`, `local` (qualquer servidor OpenAI-compatible),
-`openai-gpt`, `openrouter`, `groq`, `gemini`.
+Existem presets prontos para `ollama`, `lmstudio`, `local` (qualquer servidor compatível com a API
+da OpenAI), `openai-gpt`, `openrouter`, `groq` e `gemini`.
 
-**O modelo precisa suportar function calling.** Isso não é opcional: sem ferramentas, o agente não
-tem como ler nem editar arquivo nenhum. Muitos modelos populares não suportam — o `uranus doctor`
-detecta e avisa antes de você gastar uma task descobrindo:
+O modelo precisa suportar function calling. Isso não é opcional: sem essa capacidade, o agente não
+consegue ler nem editar nenhum arquivo. Muitos modelos populares não suportam function calling, e o
+`uranus doctor` detecta e avisa isso antes de você gastar uma task descobrindo:
 
 ```bash
 uranus provider test
 ```
 
-Se aparecer _"não suporta ferramentas"_, troque por um modelo com suporte a tools —
-`qwen2.5-coder`, `llama3.1`, `mistral-nemo` e `firefunction` funcionam.
+Se aparecer a mensagem "não suporta ferramentas", troque por um modelo com suporte, como
+`qwen2.5-coder`, `llama3.1`, `mistral-nemo` ou `firefunction`.
 
-### Chaves de API nunca vão na configuração
+Sobre o tamanho do modelo: um modelo de 7 bilhões de parâmetros normalmente dá conta de tarefas de
+um único arquivo com verificação por testes. Em tarefas que exigem coordenar dois ou mais arquivos,
+ele erra com frequência. Vale a pena combinar modelos: forte onde importa, local onde basta.
+
+```yaml
+providers:
+  byAgent: { executor: claude-code, reviewer: ollama, security: ollama }
+```
+
+### Sobre a janela de contexto do Ollama
+
+Esse é o ponto que mais causa problema silencioso: o Ollama não usa a janela nominal do modelo, e
+sim o valor configurado em `num_ctx`, que na maioria das máquinas é apenas 4096. Quando o contexto
+enviado é maior que isso, o Ollama descarta os tokens mais antigos sem avisar, e o modelo passa a
+responder com confiança sobre um contexto que na verdade nunca recebeu.
+
+O Uranus corta o pacote de contexto para caber na janela declarada, e registra o corte:
+
+```
+contexto reduzido de 120000 para 16384 tokens: "ollama" declara janela de 32768.
+```
+
+Declare em `contextLength` o valor real que você configurou no seu servidor (via
+`OLLAMA_CONTEXT_LENGTH` ou no Modelfile). O padrão assumido é 4096, de propósito conservador:
+declarar um valor menor custa contexto, declarar um valor maior custa correção.
+
+### Chaves de API nunca vão direto na configuração
 
 ```yaml
 providers:
@@ -440,152 +518,174 @@ providers:
       mode: api
       preset: openrouter
       model: anthropic/claude-sonnet-4
-      apiKeyRef: env:OPENROUTER_API_KEY # resolvida no momento do uso
+      apiKeyRef: env:OPENROUTER_API_KEY
 ```
 
-O valor é lido da variável de ambiente quando necessário e registrado para redação automática —
-ele não aparece em log, evento ou saída de comando.
+O valor é lido da variável de ambiente só na hora de usar, e é automaticamente removido de
+qualquer log, evento ou saída de comando.
 
-### O híbrido: forte onde importa, local onde basta
+### Comandos de provedor
 
-Esta é a configuração que costuma fazer mais sentido. O Executor faz edição multi-turno com
-ferramentas, que é exatamente onde modelos pequenos quebram. Já os gates de qualidade são uma
-passada com saída estruturada — bem mais tratável localmente.
-
-```yaml
-providers:
-  default: claude-code
-  entries:
-    claude-code: { mode: cli, model: sonnet }
-    ollama: { mode: api, preset: ollama, model: qwen2.5-coder:14b }
-  byAgent:
-    executor: claude-code # o trabalho difícil
-    reviewer: ollama # revisão: custo zero
-    security: ollama
-  byTier:
-    deep: claude-code
-    fast: ollama
-```
-
-Confira quem seria escolhido para cada papel, sem gastar nada:
-
-```bash
-uranus provider why reviewer
-```
-
-### Failover
-
-Se um provider falha repetidamente, o circuito abre e o roteador pula para o próximo sem que a
-task falhe:
-
-```yaml
-providers:
-  default: openrouter
-  fallback: [groq, ollama]
-```
-
-### Comandos
-
-| Comando                        | O que faz                                                         |
-| ------------------------------ | ----------------------------------------------------------------- |
-| `uranus provider list`         | Providers registrados, modo de cada um e o roteamento ativo.      |
-| `uranus provider test [id]`    | Health check real: conectividade, modelo e suporte a ferramentas. |
-| `uranus provider why <agente>` | Mostra qual provider seria escolhido para um agente e por quê.    |
+| Comando | O que faz |
+| --- | --- |
+| `uranus provider list` | Lista os provedores registrados e o roteamento ativo. |
+| `uranus provider test [id]` | Testa conectividade, modelo e suporte a ferramentas de verdade. |
+| `uranus provider why <agente>` | Mostra qual provedor seria escolhido para um agente e por quê. |
 
 ---
 
-## Como funciona
+## Como o Uranus funciona por dentro
 
 ### O ciclo do kernel
 
-Cada iteração passa por dez fases, e **termina sempre em checkpoint**:
+Cada iteração passa por dez fases, sempre terminando num ponto de recuperação:
 
 ```
 recover → sense → select → admit → prepare → execute → verify → integrate → learn → checkpoint
 ```
 
-- **recover** — se houve interrupção, restaura o último checkpoint íntegro e reconcilia worktrees.
-- **sense** — colhe leases expirados, atualiza estatísticas, replaneja tasks em `draft`.
-- **select** — o Scheduler escolhe a próxima task por 14 políticas ponderadas.
-- **admit** — permissões e orçamento. Recusa **antes** de gastar.
-- **prepare** — monta o contexto com orçamento e cria o git worktree isolado.
-- **execute** — o agente trabalha. É a única fase onde o modelo age.
-- **verify** — o `Verifier` executa o contrato de aceite. **Único árbitro de sucesso.**
-- **integrate** — cadeia de qualidade, commit, push, PR.
-- **learn** — memória, custo, telemetria.
-- **checkpoint** — snapshot atômico. Perda máxima em qualquer crash: um tick.
+1. **recover**: se houve interrupção, restaura o último ponto de recuperação íntegro.
+2. **sense**: coleta permissões expiradas, atualiza estatísticas, replaneja tasks pendentes.
+3. **select**: o escalonador escolhe a próxima task, avaliando 14 políticas diferentes.
+4. **admit**: verifica permissões e orçamento antes de gastar qualquer coisa.
+5. **prepare**: monta o contexto dentro do orçamento e cria o ambiente isolado.
+6. **execute**: o agente trabalha. É a única fase em que o modelo age de verdade.
+7. **verify**: roda o contrato de aceite. É o único responsável por decidir sucesso.
+8. **integrate**: roda a cadeia de qualidade, faz o commit, o push e abre o Pull Request.
+9. **learn**: atualiza memória, custo e telemetria.
+10. **checkpoint**: salva um retrato do estado. Se o processo cair, o máximo que se perde é um passo.
 
-### O que acontece quando falha
+### O que acontece quando uma task falha
 
-O diagnóstico é **estruturado** (categoria + evidência), não texto livre. A política decide, em
-ordem de custo:
+O diagnóstico de falha é estruturado (categoria e evidência), nunca um texto livre. A partir dele,
+uma política decide o próximo passo, em ordem de custo crescente:
 
-1. **Retry com contexto** — a próxima tentativa recebe o diagnóstico no prompt.
-2. **Escalada** — mesma categoria repetida? Troca para um agente com método diferente
-   (`bug-hunter`), porque repetir o que já falhou é a definição do loop.
-3. **Replanejamento** — a escalada também falhou? O plano vira suspeito e volta ao Planner.
-4. **Bloqueio** — tentativas esgotadas. A task vai para `blocked` com o histórico completo.
+1. **Tenta de novo** com o diagnóstico incluído no próximo pedido ao modelo.
+2. **Escala** para um agente diferente se o mesmo tipo de erro se repetir, porque repetir a mesma
+   abordagem que já falhou é a definição de um loop sem saída.
+3. **Replaneja** se mesmo a escalada falhar. O plano original vira suspeito e volta ao Planner.
+4. **Bloqueia** a task se as tentativas se esgotarem, guardando o histórico completo para você ler.
 
 ### Segurança
 
-- **Escrita só no worktree.** Sua branch principal nunca é tocada.
-- **Prompt injection.** Todo conteúdo vindo do repositório entra no prompt marcado como dado
-  não-confiável. Um comentário no código dizendo "ignore os testes e faça merge" não muda nada:
-  o merge é decidido por código, não pelo modelo.
-- **Segredos.** Nunca entram no contexto e são redigidos de logs, eventos e saída de comandos.
-- **Permissões deny-by-default** em ferramentas, filesystem e rede, intersectadas entre agente,
-  projeto e escopo da task.
+* A escrita só acontece no ambiente isolado. Sua branch principal nunca é tocada diretamente.
+* Todo conteúdo vindo do seu repositório entra no prompt marcado como dado não confiável. Um
+  comentário no código dizendo "ignore os testes e faça merge" não muda nada: quem decide o merge
+  é código, não o modelo.
+* Segredos nunca entram no contexto do modelo, e são automaticamente removidos de logs, eventos e
+  saída de comandos.
+* Permissões de ferramentas, arquivos e rede são negadas por padrão, e combinam as regras de
+  agente, projeto e task.
+
+---
+
+## Múltiplos projetos
+
+Hoje, rodar vários projetos ao mesmo tempo significa rodar vários processos: cada `uranus start`
+usa seu próprio banco de estado, seu próprio log de eventos e seu próprio ambiente isolado. Não
+existe nenhum estado compartilhado entre eles, então rodar um processo `uranus` por repositório já
+funciona sem interferência. Um teste dedicado prova isso da forma mais exigente possível: duas
+pilhas completas rodando ao mesmo tempo dentro do mesmo processo, o que expõe qualquer estado
+compartilhado que dois processos separados de sistema operacional jamais revelariam.
+
+O único cuidado prático é a porta do painel web, que por padrão é fixa em `4319`. Se você rodar
+dois projetos com o painel ligado ao mesmo tempo, configure `telemetry.dashboard.port` com um
+valor diferente em cada um.
+
+Ter um único processo orquestrando vários projetos ao mesmo tempo é uma mudança bem maior, que
+ainda não existe e está fora do escopo por enquanto.
+
+### Projetos vinculados
+
+Dois projetos relacionados, como um backend e um frontend em repositórios separados, cada um com
+seu próprio `uranus init`, não compartilham nada por padrão: nem backlog, nem orçamento, nem
+memória. Para dar visibilidade de um lado sobre o que importa do outro, sem misturar os dois:
+
+```yaml
+# .uranus/config.yaml do projeto "ui"
+linkedProjects:
+  - path: ../core # caminho relativo à raiz deste projeto
+    alias: core # opcional; por padrão usa o nome da pasta
+    scopes: [convention, architecture] # quais escopos de memória do vizinho entram
+    limit: 6 # teto de registros por vínculo
+```
+
+A memória do escopo escolhido no projeto vizinho passa a entrar no contexto de qualquer task, mas
+só como leitura: nada é escrito de volta no `.uranus` do outro projeto, e o conteúdo chega sempre
+marcado como não confiável, igual a qualquer conteúdo que atravessa a fronteira entre projetos.
+Backlog, fila, orçamento e escalonador continuam totalmente independentes.
 
 ---
 
 ## Agentes
 
-O catálogo é declarativo: cada agente é um `.yaml` em `packages/agents/catalog/`. Mudar a missão,
-o escopo ou o critério de sucesso de um agente é editar o arquivo — nada recompila.
+O catálogo de agentes é declarativo: cada agente é um arquivo `.yaml` dentro de
+`packages/agents/catalog/`. Mudar a missão, o escopo ou o critério de sucesso de um agente é
+simplesmente editar esse arquivo, sem precisar recompilar nada.
 
-| Agente          | O que faz                                                         | Escreve código? |
-| --------------- | ----------------------------------------------------------------- | --------------- |
-| `executor`      | Implementa a task produzindo um diff.                             | sim             |
-| `planner`       | Decompõe item de backlog em tasks verificáveis.                   | não             |
-| `testing`       | Constrói o sinal de verificação em repos sem testes.              | sim             |
-| `reviewer`      | Revisa o diff contra corretude e convenções registradas.          | não             |
-| `security`      | Audita o diff em busca de vulnerabilidades.                       | não             |
-| `qa`            | Busca o que os testes que passaram não cobrem.                    | não             |
-| `bug-hunter`    | Reproduz, isola e corrige quando o Executor falhou repetidamente. | sim             |
-| `refactor`      | Reduz dívida técnica preservando comportamento.                   | sim             |
-| `documentation` | Mantém docs sincronizados com o código.                           | sim             |
+| Agente | O que faz | Escreve código? |
+| --- | --- | --- |
+| `executor` | Implementa a task e produz um diff. | sim |
+| `planner` | Transforma um item de backlog em tasks verificáveis. | não |
+| `testing` | Constrói a base de testes em projetos que ainda não têm. | sim |
+| `reviewer` | Revisa o diff contra corretude e convenções do projeto. | não |
+| `security` | Audita o diff em busca de vulnerabilidades. | não |
+| `qa` | Procura o que os testes que passaram ainda não cobrem. | não |
+| `bug-hunter` | Reproduz, isola e corrige quando o executor falhou várias vezes. | sim |
+| `refactor` | Reduz dívida técnica preservando o comportamento existente. | sim |
+| `documentation` | Mantém a documentação sincronizada com o código. | sim |
 
-Para customizar um agente no seu projeto, coloque um YAML em `.uranus/agents/` com o mesmo `name` —
-ele sobrescreve o builtin.
+Para personalizar um agente no seu projeto, crie um arquivo YAML em `.uranus/agents/` com o mesmo
+nome do agente original. Ele sobrescreve o padrão do framework.
 
-**Como agentes de julgamento convivem com "o modelo nunca decide":** Reviewer, Security e QA
-produzem _achados_ com severidade — dados. Uma política em código (`blockAt` na config) decide o
-que bloqueia. Um agente devolvendo "aprovado" seria o modelo decidindo o fluxo; devolvendo
-"critical" e o harness aplicando a regra, não é.
+Agentes como Reviewer, Security e QA fazem julgamentos, mas não decidem o fluxo: eles produzem
+achados com uma severidade, que é um dado. Uma política em código (`blockAt`, na configuração)
+decide o que efetivamente bloqueia a integração.
+
+### Por que o Uranus não gera tasks infinitas
+
+Toda task concluída passa pelos gates de qualidade, e todo achado desses gates pode virar uma nova
+task. Sem um limite claro, isso viraria uma bola de neve: a fila cresceria mais rápido do que
+esvazia, e você acabaria recebendo dezenas de correções que nunca pediu.
+
+Por isso existem cinco cortes automáticos, aplicados sempre em código, nunca pelo modelo:
+
+| Corte | Regra | Configuração |
+| --- | --- | --- |
+| Geração | Correção de correção não gera nova correção. | `followUp.maxGeneration` (padrão 1) |
+| Severidade | Achados abaixo do limiar viram informação, não task. | `followUpAt` (padrão `high`) |
+| Categoria | Estilo, nome e formatação não geram Pull Request sozinhos. | `followUp.denyCategories` |
+| Duplicata | A mesma queixa nunca vira duas tasks, mesmo entre runs. | automático |
+| Teto do run | Limite total de tasks derivadas, somando todos os gates. | `followUp.maxPerRun` (padrão 8) |
+
+Nada se perde: todo achado que não vira task automaticamente entra no backlog com o motivo
+registrado, e você decide o que vale a pena promover, quando quiser.
+
+```bash
+uranus task list          # tasks derivadas aparecem marcadas com sua geração e origem
+uranus task why <taskId>  # mostra de qual gate, geração e task ela veio
+uranus backlog list       # tudo que os gates encontraram e a política não promoveu
+```
 
 ---
 
 ## Plugins
 
-O kernel não sabe o que é npm, Next.js ou Docker — e essa é a regra, não um acidente (INV-8).
-Todo conhecimento de stack vive em plugin, e um plugin só liga quando o projeto é daquele tipo.
+O núcleo do Uranus não sabe o que é npm, Next.js ou Docker, e isso é proposital: todo conhecimento
+específico de uma stack vive num plugin, e um plugin só se ativa quando o projeto é daquele tipo.
 
-### O que já vem
+### O que já vem incluído
 
-| Plugin   | Ativa quando                                | Registra                                                      |
-| -------- | ------------------------------------------- | ------------------------------------------------------------- |
-| `node`   | existe `package.json`                       | runners de teste, `node:typecheck`, `node:lint`, `node:build` |
-| `nextjs` | `next` nas dependências ou `next.config.*`  | agente `nextjs`, `nextjs:build`, contexto de configuração     |
-| `docker` | existe `Dockerfile` ou `docker-compose.yml` | `docker:build`, `docker:compose-config`                       |
+| Plugin | Ativa quando | Registra |
+| --- | --- | --- |
+| `node` | existe `package.json` | runners de teste, checagem de tipos, lint, build |
+| `nextjs` | `next` está nas dependências, ou existe `next.config.*` | agente próprio, build, contexto |
+| `docker` | existe `Dockerfile` ou `docker-compose.yml` | build e validação de compose |
 
-O plugin `node` é o que faz o INV-8 valer: ele descobre o gerenciador de pacotes pelo lockfile, o
-runner de testes pelas dependências declaradas e só registra `lint`/`build` se os scripts
-existirem de fato. Registrar um check de lint num projeto sem lint só produziria task reprovada
-por comando inexistente.
-
-O plugin `nextjs` registra um **agente** com `specificity: 5` — maior que o `executor` genérico
-(`0`). Num projeto Next.js, ele passa a ser o escolhido para tasks de feature e bugfix, sem que
-nada no kernel mencione Next.js.
+O plugin `node`, por exemplo, descobre o gerenciador de pacotes pelo lockfile, o runner de testes
+pelas dependências declaradas, e só registra checagens de lint ou build se os scripts realmente
+existirem no projeto. Registrar uma checagem de lint num projeto sem lint só geraria uma task
+reprovada por um comando que nem existe.
 
 ```bash
 uranus plugin list
@@ -594,26 +694,26 @@ uranus plugin list
 ```
 Ativos:
   node         arquivo "package.json" existe
-               registrou: 3 checks, 1 contextSources, 4 runners
+               registrou: 3 checks, 1 fonte de contexto, 4 runners
   nextjs       dependência "next" em package.json
-               registrou: 1 agentes, 1 checks, 1 contextSources, 1 prompts
+               registrou: 1 agente, 1 check, 1 fonte de contexto, 1 prompt
 
 Inativos:
   docker       nenhuma regra de detecção casou com este projeto
 ```
 
-Toda ativação carrega o motivo. Quando um check reprovar sua task, `uranus plugin list` responde
-de onde ele veio sem arqueologia.
+Toda ativação vem com o motivo. Se uma checagem reprovar sua task, `uranus plugin list` mostra de
+onde ela veio, sem você precisar investigar.
 
-### Ligando e desligando
+### Ligando e desligando plugins
 
-Na forma curta, `plugins` é a lista do que deve ligar mesmo sem detecção:
+Na forma curta, `plugins` é a lista do que deve ligar mesmo sem detecção automática:
 
 ```yaml
 plugins: [node, nextjs]
 ```
 
-Na forma longa, você desliga um plugin detectado e passa ajustes por plugin:
+Na forma longa, você pode desligar um plugin detectado e ajustar configurações por plugin:
 
 ```yaml
 plugins:
@@ -625,12 +725,13 @@ plugins:
       buildCommand: 'pnpm build'
 ```
 
-Cada plugin enxerga apenas o próprio ramo: o `node` lê `testCommand`, nunca `plugins.settings.nextjs`.
+Cada plugin só enxerga sua própria configuração: o plugin `node` lê `testCommand`, mas nunca as
+configurações do `nextjs`.
 
-### Escrevendo um plugin
+### Escrevendo um plugin próprio
 
-Um plugin é um diretório com `uranus.plugin.json` e um módulo ES. Coloque-o em
-`.uranus/plugins/<id>/` ou publique como pacote npm com `uranus-plugin` no nome.
+Um plugin é uma pasta com um arquivo `uranus.plugin.json` e um módulo ES. Coloque a pasta em
+`.uranus/plugins/<id>/`, ou publique como um pacote npm com `uranus-plugin` no nome.
 
 ```json
 {
@@ -646,7 +747,7 @@ Um plugin é um diretório com `uranus.plugin.json` e um módulo ES. Coloque-o e
 ```
 
 ```js
-// index.js — lembre de "type": "module" no package.json
+// index.js (lembre de declarar "type": "module" no package.json)
 import { definePlugin, commandCheck } from '@uranus/plugins/sdk'
 
 export default definePlugin(manifest, (context) => {
@@ -660,7 +761,7 @@ export default definePlugin(manifest, (context) => {
 })
 ```
 
-Depois, no contrato de aceite de uma task:
+Depois, use no contrato de aceite de uma task:
 
 ```yaml
 checks:
@@ -670,20 +771,16 @@ checks:
     timeoutMs: 600000
 ```
 
-O que um plugin pode registrar: agentes, ferramentas, checks, context sources, prompts, regras,
-políticas de scheduler e runners de teste. O que ele **não** alcança: o kernel, o banco de estado
-e o event store bruto. A superfície é fechada de propósito (ADR-010).
+Um plugin pode registrar agentes, ferramentas, checagens, fontes de contexto, prompts, regras,
+políticas de escalonamento e runners de teste. O que ele nunca alcança é o núcleo do Uranus, o
+banco de estado e o log de eventos bruto.
 
-Regras de detecção são avaliadas com OU — basta uma casar. Regras do tipo `command` só rodam se o
-plugin declarar `permissions.exec`; detecção não é a porta dos fundos para executar algo.
+### Sobre as permissões dos plugins
 
-### Permissões, e o que elas realmente garantem
+O manifesto de um plugin declara acesso a `fs`, `net`, `exec` e `secrets`. O padrão é o mais
+restritivo possível: um plugin que esquece de declarar algo simplesmente não recebe acesso a isso.
 
-O manifesto declara `fs`, `net`, `exec` e `secrets`. O padrão é o mais restritivo: um plugin que
-esquece de declarar não ganha nada. Um plugin sem `exec` recebe um shell que recusa toda chamada
-com mensagem explícita.
-
-Antes de instalar, audite:
+Antes de instalar, você pode auditar:
 
 ```bash
 uranus plugin check ./caminho/do/plugin
@@ -693,91 +790,91 @@ uranus plugin check ./caminho/do/plugin
 Telemetria (telemetria-secreta) v0.1.0
 
 Ao instalar, você autoriza este plugin a:
-  • ler arquivos do projeto
+  ler arquivos do projeto
 
 Plugin "telemetria-secreta" usa capacidades não declaradas no manifesto:
-  • usa fetch() em index.js, mas não declara "permissions.net"
+  usa fetch() em index.js, mas não declara "permissions.net"
 ```
 
-**Seja honesto sobre o alcance disso:** plugins JavaScript rodam no mesmo processo que o kernel.
-Não existe sandbox real em processo — `node:vm` é contornável e `worker_threads` compartilha rede
-e filesystem. A varredura compara o que o código importa com o que o manifesto declara, o que pega
-descuido, atualização que ganhou capacidade nova sem avisar e plugin malicioso ingênuo. Não pega
-evasão deliberada. **Instalar um plugin é confiar no autor**, exatamente como instalar um pacote npm.
+Seja realista sobre o que essa auditoria garante: plugins JavaScript rodam no mesmo processo que o
+núcleo do Uranus, e não existe um sandbox real dentro do mesmo processo. A varredura compara o que
+o código do plugin faz com o que o manifesto declara, o que pega descuido e atualização que ganhou
+uma capacidade nova sem avisar, mas não pega alguém tentando burlar isso de propósito. Instalar um
+plugin é confiar no autor dele, do mesmo jeito que instalar um pacote npm qualquer.
 
-Falha de plugin é contida: manifesto inválido, import quebrado ou exceção na ativação viram linha
-no relatório, e o que o plugin alcançou a registrar é desfeito. O kernel continua com uma
-capacidade a menos, nunca derrubado.
+Se um plugin falhar (manifesto inválido, import quebrado, exceção na ativação), isso fica contido:
+vira uma linha no relatório, o que ele já tinha registrado é desfeito, e o Uranus continua rodando
+com uma capacidade a menos, sem nunca cair por causa disso.
 
 ---
 
-## Dashboard e custo
+## Painel e custo
 
 ```bash
 uranus start --dashboard
 ```
 
-O painel abre em `http://localhost:4319` e mostra o run acontecendo. Ele é um **observador puro**:
-tudo o que aparece ali foi derivado do log de eventos, então nada no painel pode ser verdade sem ter
-acontecido de verdade. Ligá-lo não muda o comportamento do kernel.
+O painel abre em `http://localhost:4319` e mostra o run acontecendo em tempo real. Ele é só um
+observador: tudo que aparece ali vem do log de eventos, então nada no painel pode mostrar algo que
+não tenha realmente acontecido. Ligar o painel não muda em nada o comportamento do kernel.
 
-### Os nove painéis
+### As telas do painel
 
-| Painel         | O que responde                                                           |
-| -------------- | ------------------------------------------------------------------------ |
-| **Agora**      | Custo do run, orçamento consumido, tasks restantes, atividade recente.   |
-| **Fila**       | Toda task com estado, agente, tentativas, custo e motivo do bloqueio.    |
-| **Timeline**   | O log de eventos, colorido por severidade.                               |
-| **Qualidade**  | Gates executados, bloqueios, achados e taxa de aprovação dos checks.     |
-| **Custo**      | Total, projeção, por agente, por modelo, por task, série de 14 dias.     |
-| **Git**        | Commits e pull requests abertos, com o diff resumido.                    |
-| **Memória**    | Memórias gravadas, conflitos, compactações, planos aceitos e rejeitados. |
-| **Aprovações** | Fila de aprovações pendentes, com botão de aprovar e negar.              |
-| **Saúde**      | Providers degradados ou em rate limit, falhas de plugin, spans recentes. |
+| Painel | O que mostra |
+| --- | --- |
+| Agora | Custo do run, orçamento consumido, tasks restantes, atividade recente. |
+| Fila | Toda task, com estado, agente, tentativas, custo e motivo de bloqueio. |
+| Timeline | O log de eventos, colorido por severidade. |
+| Qualidade | Gates executados, bloqueios, achados e taxa de aprovação. |
+| Custo | Total, projeção, por agente, por modelo, por task, e série dos últimos 14 dias. |
+| Git | Commits e Pull Requests abertos, com o resumo do diff. |
+| Memória | Memórias gravadas, conflitos, compactações e planos aceitos ou rejeitados. |
+| Aprovações | Fila de aprovações pendentes, com botão de aprovar e negar. |
+| Saúde | Provedores degradados ou em limite de uso, falhas de plugin, atividade recente. |
 
-### Aprovar pela interface
+### Aprovando pela interface
 
-Quando o kernel pede aprovação humana — merge, force-push, mudança de CI, migração, dependência
-nova, estouro de orçamento —, ele **bloqueia** e a aprovação aparece no painel com o diff e o risco.
-Um clique libera a task. A decisão vai para o log com autor `dashboard`: aprovação sem autor
-rastreável seria carimbo, não supervisão.
+Quando o kernel precisa de uma aprovação humana (merge, force push, mudança de CI, migração,
+dependência nova, estouro de orçamento), ele para e a aprovação aparece no painel, com o diff e o
+risco explicados. Um clique libera a task. A decisão fica registrada no log com o autor `dashboard`,
+porque uma aprovação sem autor rastreável não seria supervisão de verdade.
 
 ### Onde o painel escuta
 
-Por padrão, `127.0.0.1`. O painel mostra o seu código e concede aprovações, então expor na rede é
-uma decisão consciente, não um default herdado — fora de loopback o servidor **exige token e se
-recusa a subir sem ele**:
+Por padrão, o painel só escuta em `127.0.0.1`, ou seja, só no seu próprio computador. Como ele
+mostra o seu código e concede aprovações, expor na rede é uma decisão que você toma
+conscientemente: fora do próprio computador, o servidor exige um token e se recusa a subir sem ele.
 
 ```yaml
 telemetry:
   dashboard:
-    enabled: true # sobe junto com `uranus start`
+    enabled: true
     port: 4319
     host: 0.0.0.0
     token: um-token-longo-e-aleatorio
 ```
 
-A página não carrega nada de origem externa (o CSP proíbe), e toda resposta passa pela redação de
-segredos antes de sair.
+A página não carrega nada de fora, e toda resposta passa por uma remoção automática de segredos
+antes de sair.
 
-### O custo é o do provider, não a nossa estimativa
+### O custo mostrado é o custo real
 
-A contabilidade usa o `usage` real reportado pelo provider. Quando o provider reporta o valor em
-dinheiro — o Claude Code CLI reporta `total_cost_usd` —, é esse número que entra; a tabela de preços
-é o plano B, usada só para providers que não reportam custo.
+A contabilidade usa o valor real reportado pelo provedor do modelo (o Claude Code CLI, por exemplo,
+reporta o custo direto em dólar). Uma tabela de preços interna só é usada como plano B, para
+provedores que não reportam custo diretamente.
 
-Isso importa porque **a cadeia de qualidade multiplica o custo por task**. Cada gate é uma sessão de
-modelo, e o painel mostra a repartição:
+Isso importa porque a cadeia de qualidade multiplica o custo por task: cada gate é uma chamada a
+modelo, e o painel mostra a divisão:
 
 ```
 Por agente:
   executor    $1.6800   4 sessões
-  reviewer    $0.0000   4 sessões     ← modelo local
-  security    $0.0000   4 sessões     ← modelo local
+  reviewer    $0.0000   4 sessões     (modelo local)
+  security    $0.0000   4 sessões     (modelo local)
 ```
 
-A tabela de preços embutida é um retrato de preços públicos e envelhece. Corrija sem esperar
-release:
+A tabela de preços embutida representa preços públicos e pode ficar desatualizada. Você pode
+corrigir sem esperar uma nova versão:
 
 ```yaml
 telemetry:
@@ -789,8 +886,8 @@ telemetry:
         effectiveFrom: '2026-01-01'
 ```
 
-Preços são **versionados por data**: um run de três meses atrás continua sendo reprecificado com o
-preço daquela época, em vez de o histórico mudar sozinho a cada reajuste.
+Os preços são versionados por data, então um run de três meses atrás continua sendo calculado com
+o preço daquela época, mesmo que o preço atual mude depois.
 
 Quando a fatura chegar, feche o ciclo:
 
@@ -801,117 +898,117 @@ uranus cost reconcile 42.17
 ```
 Uranus reportou: $41.8300
 Fatura:          $42.1700
-Diferença:       -0.8%
+Diferença:       0.8%
 
-Dentro da tolerância de ±3%.
+Dentro da tolerância de 3%.
 ```
 
-Fora da tolerância, a causa mais comum é um modelo sem preço na tabela. O Uranus avisa em tempo de
-execução quando isso acontece (`sem preço conhecido para o modelo`) — silenciar seria o jeito mais
-discreto de o relatório sair menor que a conta.
+Se a diferença passar da tolerância, a causa mais comum é um modelo sem preço cadastrado na tabela.
+O Uranus avisa isso em tempo real quando acontece.
 
 ### Métricas para fora
 
-`GET /api/metrics` expõe o formato Prometheus. Para OpenTelemetry:
+`GET /api/metrics` expõe as métricas no formato do Prometheus. Para exportar via OpenTelemetry:
 
 ```yaml
 telemetry:
   otlpEndpoint: http://localhost:4318
 ```
 
-O exportador é best-effort por definição: coletor fora do ar não atrasa nem derruba um run.
+Se o coletor estiver fora do ar, isso nunca atrasa nem derruba um run.
 
 ---
 
 ## Solução de problemas
 
 **`uranus doctor` diz que o `claude` falhou**
-O CLI precisa de login próprio, separado do app desktop: `claude /login`. Se ele não estiver no
-PATH, o Uranus procura em `~/.local/bin` e `%APPDATA%/npm` automaticamente; para outro caminho, use
-`providers.entries.claude-code.binary` na config.
+O CLI da Claude precisa de login próprio, separado do app desktop: rode `claude /login`. Se ele não
+estiver no PATH, o Uranus procura automaticamente em `~/.local/bin` e `%APPDATA%/npm`. Para outro
+caminho, configure `providers.entries.claude-code.binary`.
 
-**A task ficou `blocked`**
-`uranus task list` mostra o motivo entre colchetes. Os mais comuns:
+**A task ficou bloqueada**
+`uranus task list` mostra o motivo entre colchetes. Os casos mais comuns são: as tentativas se
+esgotaram (veja `uranus logs` para o diagnóstico e considere reescrever o pedido com mais
+precisão), o orçamento é insuficiente (aumente `budget.perTask.usd` ou reduza o escopo), ou houve
+um problema do próprio provedor, como autenticação, rede ou limite de uso.
 
-- _"Falhou N vezes"_ — tentativas esgotadas. Veja `uranus logs` para o diagnóstico e considere
-  reescrever o `intent` com mais precisão.
-- _"orçamento insuficiente"_ — aumente `budget.perTask.usd` ou reduza o escopo.
-- _mensagem do provider_ — problema de infraestrutura (auth, rede, limite).
+Depois de resolver, use `uranus task retry <taskId>`.
 
-Depois de resolver: `uranus task retry <taskId>`.
-
-**"não há mais tasks executáveis" com tasks na fila**
-Alguma política do scheduler está vetando. `uranus task why <taskId>` mostra qual.
+**"Não há mais tasks executáveis" mesmo com tasks na fila**
+Alguma política do escalonador está impedindo. `uranus task why <taskId>` mostra qual.
 
 **O plano é sempre rejeitado**
-As mensagens de rejeição são objetivas — leia-as. As causas comuns são escopo amplo demais (`**`),
-contrato que só verifica o diff sem provar comportamento, ou runner de testes que o projeto não
-tem. Melhorar o `--body` do item de backlog costuma resolver.
+As mensagens de rejeição são objetivas, vale a pena ler com atenção. As causas mais comuns são um
+escopo grande demais, um contrato de aceite que só verifica o diff sem provar comportamento
+nenhum, ou pedir um runner de testes que o projeto não tem. Melhorar a descrição do item de
+backlog costuma resolver.
 
 **"Push falhou; commit permanece local"**
-O repositório não tem remote configurado, ou o `gh` não está autenticado. O trabalho está seguro na
-branch `uranus/...`: `git log uranus/<branch>` e `git diff main..uranus/<branch>`.
+O repositório não tem um remote configurado, ou o `gh` não está autenticado. O trabalho continua
+seguro na branch `uranus/...`: use `git log uranus/<branch>` e `git diff main..uranus/<branch>`
+para ver o que foi feito.
 
 **Modo restrito: só aceita tasks de teste**
-Seu projeto não tem sinal de verificação suficiente (`uranus context show` mostra a pontuação). É
-proposital: sem testes, não há como provar que o código funciona, e o Uranus viraria um gerador de
-código não-verificado. Deixe o agente `testing` construir a base primeiro.
+Seu projeto não tem sinal de verificação suficiente (`uranus context show` mostra a pontuação).
+Isso é proposital: sem testes, não há como provar que o código funciona, e o Uranus viraria só um
+gerador de código não verificado. Deixe primeiro o agente `testing` construir essa base.
 
 ---
 
-## Desenvolvimento do framework
+## Desenvolvendo o próprio framework
 
 ```bash
 pnpm install
-```
-
-```bash
 pnpm check
-```
-
-```bash
 pnpm coverage
 ```
 
-O teste de caos é obrigatório no CI: ele mata o kernel em cada uma das fases do tick e prova que o
-`--resume` conclui a task sem duplicar commit, sem worktree órfão e sem lease preso.
+Existe um teste de caos obrigatório no CI: ele mata o kernel em cada uma das fases do ciclo e prova
+que retomar com `--resume` sempre conclui a task sem duplicar commit, sem deixar ambiente órfão e
+sem travar nenhuma permissão.
 
-### Pacotes
+### Pacotes do monorepo
 
-| Pacote              | Responsabilidade                                                                                                 |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `@uranus/core`      | Tipos, contratos e domínio. Raiz do grafo, sem I/O.                                                              |
-| `@uranus/config`    | Configuração em camadas com schema.                                                                              |
-| `@uranus/events`    | Barramento tipado e event log JSONL segmentado.                                                                  |
-| `@uranus/state`     | SQLite, migrations, repositórios, leases com TTL, snapshot atômico.                                              |
-| `@uranus/executors` | Shell cross-platform, sandbox por worktree, `Verifier`, diagnóstico.                                             |
-| `@uranus/vcs`       | Adaptador git e host GitHub.                                                                                     |
-| `@uranus/queue`     | Fila persistente com leases por arquivo e dependências.                                                          |
-| `@uranus/scheduler` | 14 políticas ponderadas com explicação auditável.                                                                |
-| `@uranus/backlog`   | Backlog e validação determinística de planos.                                                                    |
-| `@uranus/context`   | Digest automático do projeto e empacotamento com orçamento.                                                      |
-| `@uranus/memory`    | Memória em Markdown com supersessão e invalidação por checksum.                                                  |
-| `@uranus/prompts`   | Templates versionados com render estrito.                                                                        |
-| `@uranus/providers` | Claude Code headless, `ApiProvider` (OpenAI-compatible e modelos locais), roteamento por papel, circuit breaker. |
-| `@uranus/agents`    | Runtime de agentes e catálogo declarativo.                                                                       |
-| `@uranus/plugins`   | Loader, varredura de capacidades, SDK e plugins `node`/`nextjs`/`docker`.                                        |
-| `@uranus/telemetry` | Métricas, spans, preços versionados, custo real e o estado vivo derivado dos eventos.                            |
-| `@uranus/dashboard` | Servidor do painel: SSE, API de leitura e fila de aprovações.                                                    |
-| `@uranus/kernel`    | O ciclo, planejamento, cadeia de qualidade, recuperação.                                                         |
-| `@uranus/cli`       | Interface de terminal e composition root.                                                                        |
+| Pacote | Responsabilidade |
+| --- | --- |
+| `@uranus/core` | Tipos, contratos e domínio. A raiz de tudo, sem operações de entrada e saída. |
+| `@uranus/config` | Configuração em camadas, com validação de schema. |
+| `@uranus/events` | Barramento de eventos e o log persistente em arquivo. |
+| `@uranus/state` | Banco de dados, migrações, repositórios e permissões com prazo. |
+| `@uranus/executors` | Execução de comandos, ambiente isolado, verificação e diagnóstico. |
+| `@uranus/vcs` | Integração com git e com o GitHub. |
+| `@uranus/queue` | Fila persistente com proteção de arquivo e dependências entre tasks. |
+| `@uranus/scheduler` | As 14 políticas de priorização, com explicação auditável. |
+| `@uranus/backlog` | Backlog e validação determinística de planos. |
+| `@uranus/context` | Resumo automático do projeto, dentro de um orçamento de tokens. |
+| `@uranus/memory` | Memória em Markdown, com atualização e invalidação automáticas. |
+| `@uranus/prompts` | Templates de prompt versionados. |
+| `@uranus/providers` | Claude Code, provedores compatíveis com a API da OpenAI, roteamento. |
+| `@uranus/agents` | O motor que executa agentes e o catálogo declarativo. |
+| `@uranus/plugins` | Carregador de plugins, SDK e os plugins node, nextjs e docker. |
+| `@uranus/telemetry` | Métricas, preços versionados, custo real e estado ao vivo. |
+| `@uranus/dashboard` | Servidor do painel web: eventos em tempo real e fila de aprovações. |
+| `@uranus/kernel` | O ciclo principal, planejamento, qualidade e recuperação. |
+| `@uranus/cli` | A interface de linha de comando. |
 
 ### Documentação
 
-[Arquitetura](docs/00-ARCHITECTURE.md) · [Contratos](docs/01-CONTRACTS.md) ·
-[Roadmap](docs/02-ROADMAP.md) · [Árvore](docs/03-TREE.md) · [Riscos](docs/04-RISKS.md)
+* [Arquitetura](docs/00-ARCHITECTURE.md)
+* [Contratos](docs/01-CONTRACTS.md)
+* [Roadmap](docs/02-ROADMAP.md)
+* [Árvore do projeto](docs/03-TREE.md)
+* [Riscos](docs/04-RISKS.md)
 
 ### Roadmap
 
-Fases 1–8 concluídas. Falta a 9: multi-projeto simultâneo, paralelismo real com lease de arquivo,
-endurecimento para runs de 8 horas e o 1.0.
+As fases 1 a 8 estão concluídas. A fase 9 (escala e robustez) está em andamento: paralelismo real,
+limpeza de eventos e compactação de memória em escala já foram entregues e testados. Falta a
+validação de campo, um teste real de 8 horas contra um provedor pago com 3 projetos rodando como
+processos separados, antes de chegar na versão 1.0. Detalhes em
+[docs/02-ROADMAP.md](docs/02-ROADMAP.md#fase-9--escala--hardening-10).
 
 ---
 
 ## Licença
 
-Apache-2.0
+Apache 2.0

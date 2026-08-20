@@ -14,6 +14,7 @@ import type {
   Logger,
   ProjectRef,
   ProviderRegistry,
+  SpawnableFinding,
   Task,
   TaskDraft,
   Workspace,
@@ -22,10 +23,14 @@ import {
   EMPTY_USAGE,
   ZERO_USD,
   applyGatePolicy,
+  effectiveContextBudget,
+  explainContextClamp,
   findingTouches,
   followUpFindings,
   newAttemptId,
   severityRank,
+  taskGeneration,
+  taskRoot,
 } from '@uranus/core'
 
 export interface GateDefinition {
@@ -157,9 +162,23 @@ export class GatePipeline {
     const started = this.options.clock.monotonic()
     const now = this.options.clock.now()
 
+    // Mesmo motivo do Executor: o gate roda no provider dele, e é a janela
+    // DESSE provider que manda. É aqui que o híbrido (Claude no Executor,
+    // modelo local nos gates) para de truncar em silêncio.
+    const budget = effectiveContextBudget(
+      this.options.contextBudgetTokens,
+      provider.value.capabilities.maxContextTokens,
+    )
+    if (budget.clamped) {
+      this.options.logger.warn(explainContextClamp(budget, provider.value.id), {
+        gate: gate.agent,
+        taskId: task.id,
+      })
+    }
+
     const contextPack = await this.options.context.pack(
       {
-        budgetTokens: this.options.contextBudgetTokens,
+        budgetTokens: budget.tokens,
         sectionBudgets: { digest: 0.1, memory: 0.35, code: 0.35, task: 0.2 },
         agent: spec,
         task,
@@ -249,19 +268,31 @@ export class GatePipeline {
 }
 
 /**
- * Converte findings em tasks de correção.
+ * Converte findings já aprovados pela política em tasks de correção.
  *
  * Bloqueantes viram tasks urgentes com dependência implícita (a task original
  * volta a falhar); não-bloqueantes viram trabalho normal na fila. Em ambos os
  * casos o contrato de aceite é herdado da task original — o INV-2 não afrouxa
  * porque o trabalho nasceu de um finding.
+ *
+ * A entrada é `SpawnableFinding`, não `Finding`: quem chega aqui já passou por
+ * `planFollowUps`. Isso é de propósito — o tipo impede que um caminho novo
+ * enfileire achados crus sem passar pelos cortes de geração, categoria,
+ * duplicata e orçamento.
  */
 export function findingsToTaskDrafts(
-  findings: readonly Finding[],
+  spawnable: readonly SpawnableFinding[],
   origin: Task,
   agent: string,
 ): readonly TaskDraft[] {
-  return findings.map((finding) => ({
+  const lineageBase = {
+    rootTaskId: taskRoot(origin),
+    parentTaskId: origin.id,
+    generation: taskGeneration(origin) + 1,
+    raisedBy: agent,
+  }
+
+  return spawnable.map(({ finding, fingerprint }) => ({
     kind: agent === 'security' ? ('security' as const) : ('bugfix' as const),
     title: `${finding.category}: ${finding.title}`.slice(0, 120),
     intent: [
@@ -281,6 +312,7 @@ export function findingsToTaskDrafts(
     // task original provou, mais o que o finding apontou.
     acceptance: origin.acceptance,
     labels: [`achado:${agent}`, `severidade:${finding.severity}`],
+    lineage: { ...lineageBase, fingerprint },
   }))
 }
 

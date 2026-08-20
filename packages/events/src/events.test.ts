@@ -394,6 +394,45 @@ describe('JsonlEventStore', () => {
       await reopened.close()
     })
   })
+
+  it('prune apaga segmentos antigos mas nunca o atual (Fase 9)', async () => {
+    await withTempDir(async (dir) => {
+      const store = await JsonlEventStore.open({ dir, maxSegmentBytes: 200 })
+      for (let i = 0; i < 60; i++) await store.append(rawEvent('TickStarted'))
+
+      const { readdirSync } = await import('node:fs')
+      const before = readdirSync(dir).filter((f) => f.startsWith('seg-'))
+      expect(before.length).toBeGreaterThan(3)
+
+      const deleted = await store.prune(2)
+      expect(deleted).toBe(before.length - 2)
+
+      const after = readdirSync(dir).filter((f) => f.startsWith('seg-'))
+      expect(after.length).toBe(2)
+      // O segmento mais recente (o que continua sendo escrito) sobrevive.
+      expect(after).toContain(before[before.length - 1])
+
+      // Continua legível e continua aceitando append depois da poda.
+      const next = await store.append(rawEvent('TickCompleted'))
+      expect(next.seq).toBe(61)
+      let count = 0
+      for await (const _ of store.read(1)) count++
+      // Só o que sobrou nos 2 segmentos mantidos (+ o novo evento) é legível —
+      // os eventos podados não existem mais, por design (Fase 9: poda real).
+      expect(count).toBeGreaterThan(0)
+      await store.close()
+    })
+  })
+
+  it('prune não apaga nada quando já há poucos segmentos', async () => {
+    await withTempDir(async (dir) => {
+      const store = await JsonlEventStore.open({ dir })
+      await store.append(rawEvent('TickStarted'))
+      const deleted = await store.prune(200)
+      expect(deleted).toBe(0)
+      await store.close()
+    })
+  })
 })
 
 describe('replay', () => {

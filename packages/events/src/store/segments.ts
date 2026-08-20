@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /**
@@ -55,4 +55,32 @@ export function segmentIndexFor(segments: readonly SegmentRef[], seq: number): n
     else break
   }
   return index
+}
+
+/**
+ * Apaga os segmentos mais antigos além dos últimos `keep`. O segmento mais
+ * recente (o que está sendo escrito agora) nunca é apagado, mesmo se
+ * `keep < 1` — o log JSONL não faz sentido sem um segmento ativo (Fase 9:
+ * "poda de eventos", o log é fonte da verdade mas não pode crescer pra
+ * sempre num run de longa duração).
+ */
+export async function pruneSegments(
+  dir: string,
+  opts: { readonly keep: number },
+): Promise<readonly SegmentRef[]> {
+  const segments = await listSegments(dir)
+  const keep = Math.max(1, opts.keep)
+  if (segments.length <= keep) return []
+
+  const toDelete = segments.slice(0, segments.length - keep)
+  const deleted: SegmentRef[] = []
+  for (const segment of toDelete) {
+    try {
+      await unlink(segment.path)
+      deleted.push(segment)
+    } catch {
+      // Já não existe ou está travado — não é fatal, a próxima poda tenta de novo.
+    }
+  }
+  return deleted
 }

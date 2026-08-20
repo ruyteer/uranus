@@ -20,7 +20,26 @@ import { failureHistory, isOscillating, repeatedLastCategory, type Attempt } fro
 import { isRestrictedMode, verificationSignalStrength, type ProjectDigest } from './context.js'
 import { compareForRetention, isActiveMemory, type MemoryRecord } from './memory.js'
 import { DENY_ALL, intersectAll, intersectPermissions, type PermissionSet } from './permission.js'
-import { dependenciesSatisfied, hasAttemptsLeft, type Task, type TaskState } from './task.js'
+import {
+  dependenciesSatisfied,
+  hasAttemptsLeft,
+  taskGroup,
+  taskGroupLabel,
+  taskStateGroup,
+  taskStateLabel,
+  type Task,
+  type TaskGroup,
+  type TaskState,
+} from './task.js'
+import {
+  DEFAULT_VALIDATION_POLICY,
+  VALIDATION_RULES,
+  isBlockingRule,
+  isRuleEnabled,
+  isValidationRule,
+  resolveValidationPolicy,
+  severityOf,
+} from './validation.js'
 import {
   EMPTY_USAGE,
   ZERO_USD,
@@ -289,6 +308,7 @@ describe('task', () => {
     acceptance: { checks: [], requireAll: true },
     attempts: 0,
     maxAttempts: 3,
+    repairAttempts: 0,
     labels: [],
     createdAt: 0,
     updatedAt: 0,
@@ -307,6 +327,90 @@ describe('task', () => {
     states.set(dep, 'done')
     expect(dependenciesSatisfied(withDep, (id) => states.get(id))).toBe(true)
     expect(dependenciesSatisfied(base, () => undefined)).toBe(true)
+  })
+
+  it('agrupa os onze estados em quatro grupos de apresentação', () => {
+    const byGroup = new Map<TaskGroup, TaskState[]>()
+    const states: readonly TaskState[] = [
+      'draft',
+      'ready',
+      'claimed',
+      'running',
+      'verifying',
+      'verified',
+      'failed',
+      'integrating',
+      'blocked',
+      'done',
+      'abandoned',
+    ]
+    for (const state of states) {
+      const group = taskStateGroup(state)
+      byGroup.set(group, [...(byGroup.get(group) ?? []), state])
+    }
+    expect(byGroup.get('queued')).toEqual(['draft', 'ready'])
+    expect(byGroup.get('working')).toEqual([
+      'claimed',
+      'running',
+      'verifying',
+      'verified',
+      'integrating',
+    ])
+    expect(byGroup.get('attention')).toEqual(['failed', 'blocked'])
+    expect(byGroup.get('finished')).toEqual(['done', 'abandoned'])
+    expect(taskGroup({ ...base, state: 'running' })).toBe('working')
+  })
+
+  it('rotula estado e grupo em pt-BR', () => {
+    expect(taskStateLabel('verifying')).toBe('Verificando')
+    expect(taskStateLabel('abandoned')).toBe('Abandonada')
+    expect(taskGroupLabel('attention')).toBe('Precisa de você')
+    expect(taskGroupLabel(taskGroup(base))).toBe('Na fila')
+  })
+})
+
+describe('política de validação', () => {
+  it('o default reproduz o comportamento histórico: tudo bloqueia', () => {
+    // Deliberado. Projeto que já existe não pode ficar mais permissivo porque
+    // alguém atualizou o Uranus — afrouxar é opt-in.
+    for (const rule of VALIDATION_RULES) {
+      expect(severityOf(DEFAULT_VALIDATION_POLICY, rule)).toBe('blocking')
+      expect(isBlockingRule(DEFAULT_VALIDATION_POLICY, rule)).toBe(true)
+    }
+    expect(DEFAULT_VALIDATION_POLICY.countTowardAttempts).toBe(false)
+    expect(DEFAULT_VALIDATION_POLICY.maxRepairAttempts).toBe(3)
+  })
+
+  it('advisory avisa sem reprovar; off nem avalia', () => {
+    const policy = resolveValidationPolicy({ rules: { scope: 'advisory', diffSize: 'off' } })
+    expect(severityOf(policy, 'scope')).toBe('advisory')
+    expect(isBlockingRule(policy, 'scope')).toBe(false)
+    expect(isRuleEnabled(policy, 'scope')).toBe(true)
+    expect(isRuleEnabled(policy, 'diffSize')).toBe(false)
+    // O que não foi declarado continua como estava.
+    expect(severityOf(policy, 'tests')).toBe('blocking')
+  })
+
+  it('enabled: false equivale a todas as regras em off', () => {
+    const policy = resolveValidationPolicy({ enabled: false })
+    for (const rule of VALIDATION_RULES) {
+      expect(severityOf(policy, rule)).toBe('off')
+      expect(isBlockingRule(policy, rule)).toBe(false)
+    }
+  })
+
+  it('resolve política parcial preservando os demais campos', () => {
+    expect(resolveValidationPolicy()).toEqual(DEFAULT_VALIDATION_POLICY)
+    const policy = resolveValidationPolicy({ countTowardAttempts: true, maxRepairAttempts: 0 })
+    expect(policy.countTowardAttempts).toBe(true)
+    expect(policy.maxRepairAttempts).toBe(0)
+    expect(policy.enabled).toBe(true)
+    expect(policy.rules).toEqual(DEFAULT_VALIDATION_POLICY.rules)
+  })
+
+  it('reconhece nome de regra', () => {
+    expect(isValidationRule('scope')).toBe(true)
+    expect(isValidationRule('nao-existe')).toBe(false)
   })
 })
 

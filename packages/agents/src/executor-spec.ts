@@ -15,7 +15,7 @@ export const EXECUTOR_SPEC: AgentSpec = {
     'Transformar uma task bem-especificada em um diff verificável, respeitando o escopo declarado e as convenções do projeto.',
   responsibilities: [
     'Implementar a mudança descrita no intent da task',
-    'Escrever ou atualizar testes que provem a mudança',
+    'Satisfazer exatamente o contrato de aceite da task — teste só quando o contrato pedir',
     'Permanecer estritamente dentro dos globs declarados em touches',
     'Registrar impedimento objetivo em URANUS_BLOCKED.md quando a task for inviável',
   ],
@@ -56,6 +56,25 @@ export const EXECUTOR_SPEC: AgentSpec = {
     maxTurns: 50,
     maxCost: { micros: 2_000_000, currency: 'USD' },
   },
-  handles: ['feature', 'bugfix', 'refactor', 'test', 'docs', 'chore', 'perf', 'deps', 'migration'],
+  // `security` está aqui de propósito: `findingsToTaskDrafts` (gate-pipeline.ts)
+  // dá esse kind às tasks de correção nascidas de achados do agente Security —
+  // mas o Security é só-leitura (não escreve arquivo) e seu prompt só funciona
+  // como gate (`diff`/`conventions` vêm de fora, via `runGate`). Sem o Executor
+  // aqui, essas tasks roteavam de volta pro próprio Security por `handles`,
+  // que nem consegue corrigir nada nem renderiza o prompt fora do gate. Em
+  // empate de `specificity`, o desempate é alfabético — "executor" < "security"
+  // — então o Executor sempre vence essa rota, mesmo sem tocar em security.yaml.
+  handles: [
+    'feature',
+    'bugfix',
+    'refactor',
+    'test',
+    'docs',
+    'chore',
+    'perf',
+    'deps',
+    'migration',
+    'security',
+  ],
   specificity: 0,
 }

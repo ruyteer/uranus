@@ -274,6 +274,29 @@ Tratar isso desde o dia 1 é mais barato do que retrofit.
 
 ---
 
+### ADR-013 — Domain-Driven Design como metodologia de modelagem
+
+**Decisão:** Todo módulo novo, toda feature nova, começa pelo domínio — entidade, agregado,
+invariante, linguagem ubíqua — antes de qualquer linha de infraestrutura, rota ou schema. A tabela
+de responsabilidade única (§6) e o modelo de domínio (§5) não são documentação decorativa: são o
+contrato que qualquer PR deve respeitar. Um módulo que passa a conhecer uma tecnologia que não é
+sua (o exemplo canônico é INV-8: o kernel não sabe o que é npm) é sinal de que a modelagem de
+domínio foi pulada, não um detalhe de estilo.
+
+**Por quê:** o Uranus já *é* orientado a domínio de fato — `Task`, `Attempt`, `AcceptanceContract`,
+`BacklogItem`, `MemoryRecord`, `ContextPack` são agregados com invariantes próprios, e a divisão em
+pacotes (`kernel`, `backlog`, `memory`, `context`, `plugins`...) já são bounded contexts com fronteira
+de responsabilidade única. Faltava declarar isso como decisão explícita, e não como coincidência de
+bom senso — sem a decisão escrita, cada PR novo corre o risco de vazar lógica de domínio para a
+camada errada (ex.: uma regra de negócio do `backlog` implementada dentro do `kernel`) só porque
+ninguém parou para nomear o conceito antes de codar.
+
+**Consequência:** ao propor uma feature, a primeira pergunta é "que conceito de domínio é esse, e
+que bounded context é dono dele" — não "em que arquivo eu boto isso". Nomes de código espelham
+nomes de domínio; não se inventa sinônimo novo para um conceito que já tem nome nesta seção.
+
+---
+
 ## 4. O Kernel
 
 ### 4.1 Responsabilidade
@@ -865,7 +888,13 @@ project:
 kernel:
   concurrency: 1
   tickIntervalMs: 1000
-  maxAttemptsPerTask: 3
+  maxAttemptsPerTask: 10
+
+validations:
+  enabled: true
+  rules: { scope: blocking, diffSize: advisory, emptyDiff: blocking }
+  countTowardAttempts: false
+  maxRepairAttempts: 3
 
 budget:
   perRun: { usd: 25, tokens: 5_000_000, wallclockMs: 14_400_000 }

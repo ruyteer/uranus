@@ -47,5 +47,8 @@
     "@uranus/vcs": "workspace:*",
     "commander": "^13.0.0",
     "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@uranus/testkit": "workspace:*"
   }
 }

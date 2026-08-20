@@ -22,6 +22,10 @@ import { isTerminal } from './task.js'
  *     │       ▲                                               ▼
  *     │       └── interrupção: qualquer estado ativo ─▶ ready (kill -9 + recovery)
  *     └───────────────── abandoned ◀──────────────────── exhausted
+ *
+ * `verified` também vai direto pra `failed` (não desenhado acima pra não
+ * poluir o diagrama): a cadeia de qualidade roda DEPOIS da verificação
+ * passar, e um gate que bloqueia reprova uma task que já estava `verified`.
  */
 
 const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = Object.freeze({
@@ -38,7 +42,11 @@ const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = Object.fr
   // execute/verify/integrate deixaria a task presa para sempre (INV-4).
   running: ['verifying', 'failed', 'blocked', 'ready', 'abandoned'],
   verifying: ['verified', 'failed', 'blocked', 'ready'],
-  verified: ['integrating', 'blocked', 'ready'],
+  // `verified → failed`: a cadeia de qualidade roda DEPOIS da verificação
+  // passar — um gate que bloqueia (achado crítico) reprova uma task já
+  // `verified`, e precisa do mesmo caminho de falha (registrar attempt,
+  // decidir retry/replan/block) que `verifying`/`integrating` já têm.
+  verified: ['integrating', 'failed', 'blocked', 'ready'],
   integrating: ['done', 'failed', 'blocked', 'ready'],
   // `failed → draft` é o replanejamento: a task volta ao Planner.
   failed: ['ready', 'blocked', 'draft', 'abandoned'],
@@ -60,6 +68,13 @@ export interface TransitionOptions {
   readonly blockReason?: BlockReason
   /** Incrementa o contador de tentativas (usado ao entrar em `running`). */
   readonly countAttempt?: boolean
+  /** Incrementa `repairAttempts` — a volta para `ready` por falha de validação. */
+  readonly countRepair?: boolean
+  /**
+   * Zera `repairAttempts`. Usado quando a verificação passa: reparo é dívida de
+   * um ciclo, e uma task não deve chegar ao teto por reparos que já resolveu.
+   */
+  readonly resetRepair?: boolean
   readonly priority?: number
 }
 
@@ -100,10 +115,19 @@ export function transition(
   }
 
   const attempts = options.countAttempt === true ? task.attempts + 1 : task.attempts
+  // `resetRepair` vence: quem zera está declarando que o ciclo fechou bem, e
+  // incrementar em seguida ressuscitaria uma dívida já quitada.
+  const repairAttempts =
+    options.resetRepair === true
+      ? 0
+      : options.countRepair === true
+        ? task.repairAttempts + 1
+        : task.repairAttempts
   const base = {
     ...task,
     state: to,
     attempts,
+    repairAttempts,
     priority: options.priority ?? task.priority,
     updatedAt: options.at,
   }

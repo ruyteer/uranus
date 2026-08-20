@@ -16,6 +16,8 @@ import { EMPTY_USAGE, newSessionId, tryParseJson, usd } from '@uranus/core'
 export interface ScriptedBehavior {
   /** Arquivos a escrever no workdir (path relativo → conteúdo). */
   readonly writes?: Readonly<Record<string, string>>
+  /** Chamadas de ferramenta simuladas, emitidas como `tool_call` antes do `done`. */
+  readonly toolCalls?: readonly { readonly name: string; readonly input?: unknown }[]
   /** Texto final "do modelo". */
   readonly text?: string
   /** Saída estruturada explícita. Sem isto, é extraída de `text` quando há schema. */
@@ -25,6 +27,13 @@ export interface ScriptedBehavior {
   readonly costUsd?: number
   /** Hook livre executado no workdir antes do resultado. */
   readonly act?: (workdir: string, request: SessionRequest) => void
+  /**
+   * Atraso artificial (ms) antes de `done` — usado pra provar concorrência real
+   * entre sessões (Fase 9). Pode ser uma função do request quando o
+   * comportamento é compartilhado entre sessões concorrentes cuja ordem de
+   * chegada em `createSession()` não é determinística.
+   */
+  readonly delayMs?: number | ((request: SessionRequest) => number)
 }
 
 const FAKE_CAPS: ProviderCapabilities = Object.freeze({
@@ -86,8 +95,13 @@ export class ScriptedProvider implements Provider {
 class ScriptedSession implements ProviderSession {
   readonly id = newSessionId()
   private readonly result_: SessionResult
+  private readonly delayMs: number
+  private readonly toolCalls: readonly { readonly name: string; readonly input?: unknown }[]
 
   constructor(request: SessionRequest, behavior: ScriptedBehavior) {
+    this.delayMs =
+      typeof behavior.delayMs === 'function' ? behavior.delayMs(request) : (behavior.delayMs ?? 0)
+    this.toolCalls = behavior.toolCalls ?? []
     const touched: string[] = []
     for (const [rel, content] of Object.entries(behavior.writes ?? {})) {
       const abs = join(request.workdir, rel)
@@ -116,9 +130,17 @@ class ScriptedSession implements ProviderSession {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   async *stream(): AsyncIterable<ProviderEvent> {
     yield { type: 'started', model: 'fake-model' }
+    if (this.delayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, this.delayMs))
+    }
+    for (const [index, call] of this.toolCalls.entries()) {
+      yield {
+        type: 'tool_call',
+        call: { id: `call_${String(index)}`, name: call.name, input: call.input },
+      }
+    }
     for (const path of this.result_.filesTouched) {
       yield { type: 'file_changed', path, change: 'create' }
     }

@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import type {
   Clock,
   Logger,
@@ -55,6 +55,33 @@ export async function ensureUranusIgnored(uranusDir: string): Promise<void> {
 }
 
 /**
+ * Symlinka `node_modules` do checkout principal pro worktree novo, quando
+ * existir. Best-effort: falhar aqui nunca derruba a criação do workspace —
+ * pior caso é o comportamento de hoje (agente instala sozinho, ou o Verifier
+ * reprova por dependência ausente).
+ */
+async function linkNodeModules(repoDir: string, worktreeDir: string, logger: Logger): Promise<void> {
+  const source = join(repoDir, 'node_modules')
+  try {
+    await stat(source)
+  } catch {
+    return // projeto sem `node_modules` instalado (ou nem é Node) — nada a linkar.
+  }
+  try {
+    await symlink(
+      source,
+      join(worktreeDir, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+  } catch (error: unknown) {
+    logger.warn('Falha ao linkar node_modules no worktree; agente vai precisar instalar', {
+      worktreeDir,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+/**
  * Sandbox por git worktree (ADR-005, INV-5).
  *
  * Diretórios curtos (`.uranus/w/<8 chars>`) por causa do limite de 260 chars do
@@ -102,6 +129,15 @@ export class WorktreeSandbox implements Sandbox {
     await mkdir(this.worktreesDir, { recursive: true })
     const added = await this.vcs.worktreeAdd(this.project.rootDir, rootDir, branch, head.value)
     if (!added.ok) return err(added.error)
+
+    // `git worktree` nunca traz `node_modules` (é gitignored) — sem isto, toda
+    // task nasce sem dependência instalada, e só descobre isso quando o
+    // Verifier já reprovou por "comando não encontrado", ou o agente perde o
+    // orçamento de turnos reinstalando (e no Windows, se o store do pnpm fica
+    // em outro drive do worktree, `pnpm install` pode nem funcionar sem
+    // `--store-dir` manual — hardlink não atravessa drive). Linkar em vez de
+    // reinstalar sidesteps o problema inteiro.
+    await linkNodeModules(this.project.rootDir, rootDir, this.logger)
 
     const workspace: Workspace = {
       id,
@@ -197,15 +233,43 @@ export class WorktreeSandbox implements Sandbox {
   }
 
   private async excludeMarkerInWorktree(worktreeDir: string): Promise<void> {
-    // Em um worktree, `.git` é um ARQUIVO com "gitdir: <caminho>". O exclude
-    // por-worktree vive em `<gitdir>/info/exclude` — invisível para o agente
-    // e sem tocar em nenhum arquivo versionado.
+    // Em um worktree, `.git` é um ARQUIVO com "gitdir: <caminho-admin>". Mas
+    // `info/exclude` NÃO é privado por-worktree — git só lê `info/exclude` do
+    // *common dir* (o `.git` do checkout principal). Escrever no admin dir
+    // por-worktree (`<gitdir>/info/exclude`) é um arquivo que o git nunca
+    // consulta: silenciosamente inerte, e o marker acaba `??` em todo `git
+    // status`/`git add --all`, poluindo cada diff e colidindo entre branches.
+    // O admin dir tem um `commondir` (path relativo ao dir raiz do repo
+    // principal) que resolve isso sem depender da estrutura `.git/worktrees/*`.
     const gitFile = await readFile(join(worktreeDir, '.git'), 'utf8')
     const match = /^gitdir:\s*(.+)$/m.exec(gitFile)
     if (match === null) return
     const gitDir = match[1]!.trim()
-    await mkdir(join(gitDir, 'info'), { recursive: true })
-    await writeFile(join(gitDir, 'info', 'exclude'), `${MARKER_FILE}\n`)
+
+    let commonDir = gitDir
+    try {
+      const commondirRaw = await readFile(join(gitDir, 'commondir'), 'utf8')
+      commonDir = resolve(gitDir, commondirRaw.trim())
+    } catch {
+      // Sem `commondir`: já é o common dir (não deveria acontecer aqui, mas
+      // não há razão para falhar a criação do workspace por causa disso).
+    }
+
+    const excludePath = join(commonDir, 'info', 'exclude')
+    await mkdir(join(commonDir, 'info'), { recursive: true })
+    let existing = ''
+    try {
+      existing = await readFile(excludePath, 'utf8')
+    } catch {
+      // primeiro workspace do projeto: ainda não existe.
+    }
+    // Idempotente e não-destrutivo: o exclude é compartilhado por todos os
+    // worktrees, então precisa preservar o que já estava lá (inclusive de
+    // outro workspace concorrente) em vez de sobrescrever.
+    if (!existing.split('\n').some((line) => line.trim() === MARKER_FILE)) {
+      const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
+      await writeFile(excludePath, `${existing}${separator}${MARKER_FILE}\n`)
+    }
   }
 }
 

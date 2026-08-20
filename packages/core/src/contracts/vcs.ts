@@ -35,6 +35,26 @@ export interface VcsAdapter {
   commit(dir: string, message: CommitMessage): Promise<Result<string>>
   diff(dir: string, options?: DiffOptions): Promise<Result<DiffSummary>>
   push(dir: string, branch: string, options?: PushOptions): Promise<Result<void>>
+
+  /** Atualiza os refs remote-tracking (`<remote>/<branch>`) sem tocar na working tree. */
+  fetch(dir: string, remote?: string): Promise<Result<void>>
+  /**
+   * Rebase da branch atual (HEAD) sobre `onto` — tipicamente `<remote>/<base>`
+   * logo após `fetch`, pra sincronizar com o que outras tasks já mergearam
+   * antes de empurrar/abrir PR. Em conflito, aborta o rebase (a working tree
+   * volta pro estado de antes da chamada) e devolve erro — nunca deixa
+   * marcadores `<<<<<<<` espalhados pro caller resolver.
+   */
+  rebase(dir: string, onto: string): Promise<Result<void>>
+
+  /**
+   * Um agente com `Bash` livre pode rodar `git stash` pra isolar um teste e
+   * esquecer o `pop` — o diff fica vazio e o Verifier vê "nada mudou" mesmo
+   * com edits reais na sessão. Estas duas entradas existem só pra devolver
+   * esse estado antes da verificação decidir qualquer coisa (INV-2).
+   */
+  stashList(dir: string): Promise<readonly string[]>
+  stashPop(dir: string): Promise<Result<void>>
 }
 
 export interface IssueRef {
@@ -59,4 +79,16 @@ export interface CodeHost {
   updatePullRequest(ref: PullRequestRef, patch: Partial<PullRequestRequest>): Promise<Result<void>>
   checksStatus(ref: PullRequestRef): Promise<Result<ChecksStatus>>
   listIssues(query: IssueQuery): Promise<Result<readonly IssueRef[]>>
+  /**
+   * PR aberto que já referencia esta task no corpo (convenção `Task: <id>`
+   * usada em todo PR que o Uranus abre). Cada tentativa nasce numa branch
+   * nova (o slug carrega o id do workspace) — procurar por branch nunca
+   * encontraria uma tentativa irmã já integrada; procurar pelo texto do
+   * corpo encontra, e é o que permite `integrate()` atualizar em vez de
+   * abrir um segundo PR pra mesma task.
+   */
+  findOpenPullRequestForTask(
+    repoDir: string,
+    taskId: string,
+  ): Promise<Result<PullRequestRef | undefined>>
 }
