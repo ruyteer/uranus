@@ -18,10 +18,15 @@ import { NotFoundError, ValidationError, err, ok } from '@uranus/core'
  * forma degradada (a instrução referencia um script que não veio junto). Uma
  * versão futura pode copiar a árvore inteira via GitHub API.
  *
- * O catálogo também inclui skills de outros repositórios oficiais além de
- * `anthropics/skills` — hoje só `find-skills`, do repo `vercel-labs/skills`
- * (o CLI `npx skills`). Por isso cada entrada carrega o próprio `sourceRepo`
- * em vez de assumir um único repositório fixo.
+ * O catálogo também inclui skills de fora de `anthropics/skills`, cada uma
+ * com o próprio `sourceRepo` em vez de assumir um repositório fixo:
+ *   - `find-skills`, do repo `vercel-labs/skills` (o CLI `npx skills`) —
+ *     oficial, é a Vercel.
+ *   - skills de motion design/gosto de frontend mantidas por indivíduos
+ *     (`Leonxlnx/taste-skill`, `lottiefiles/motion-design-skill`,
+ *     `kylezantos/design-motion-principles`, `mblode/agent-skills`,
+ *     `daffy0208/ai-dev-standards`) — comunidade, não Anthropic/Vercel, por
+ *     isso `official: false` nessas.
  */
 export interface SkillCatalogEntry {
   readonly id: string
@@ -52,12 +57,21 @@ function entry(id: string, title: string, description: string): SkillCatalogEntr
   }
 }
 
-/** Como `entry()`, mas para uma skill que mora fora de `anthropics/skills`. */
+/**
+ * Como `entry()`, mas para uma skill que mora fora de `anthropics/skills`.
+ * `official` default `true` (repo de organização reconhecida, ex.: Vercel);
+ * passe `false` explicitamente pra skill mantida por indivíduo/comunidade.
+ */
 function externalEntry(
   id: string,
   title: string,
   description: string,
-  options: { readonly sourceRepo: string; readonly sourceUrl: string; readonly rawUrl: string },
+  options: {
+    readonly sourceRepo: string
+    readonly sourceUrl: string
+    readonly rawUrl: string
+    readonly official?: boolean
+  },
 ): SkillCatalogEntry {
   return { id, title, description, official: true, ...options }
 }
@@ -163,6 +177,71 @@ export const SKILLS_CATALOG: readonly SkillCatalogEntry[] = Object.freeze([
       sourceRepo: 'vercel-labs/skills',
       sourceUrl: 'https://github.com/vercel-labs/skills/tree/main/skills/find-skills',
       rawUrl: 'https://raw.githubusercontent.com/vercel-labs/skills/main/skills/find-skills/SKILL.md',
+    },
+  ),
+  externalEntry(
+    'taste-skill',
+    'Bom gosto de frontend (taste-skill)',
+    'Skill anti-clichê pra landing page, portfólio e redesign — infere a direção de design a partir ' +
+      'do brief, mapeia pra design system real quando cabe, audita antes de redesenhar. Não é pra ' +
+      'dashboard ou UI de produto multi-etapa.',
+    {
+      sourceRepo: 'Leonxlnx/taste-skill',
+      sourceUrl: 'https://github.com/leonxlnx/taste-skill/tree/main/skills/taste-skill',
+      rawUrl: 'https://raw.githubusercontent.com/Leonxlnx/taste-skill/main/skills/taste-skill/SKILL.md',
+      official: false,
+    },
+  ),
+  externalEntry(
+    'motion-design',
+    'Motion design (LottieFiles)',
+    'Princípios de motion design — timing, easing, coreografia, princípios de animação da Disney ' +
+      'adaptados pra UI. Funciona com CSS, Framer Motion, GSAP, Lottie ou spring.',
+    {
+      sourceRepo: 'lottiefiles/motion-design-skill',
+      sourceUrl: 'https://github.com/lottiefiles/motion-design-skill/tree/main/skills/motion-design',
+      rawUrl:
+        'https://raw.githubusercontent.com/lottiefiles/motion-design-skill/main/skills/motion-design/SKILL.md',
+      official: false,
+    },
+  ),
+  externalEntry(
+    'design-motion-principles',
+    'Princípios de motion (audit + build)',
+    'Modo build pra componente com motion proposital, modo audit pra pegar animação "AI-slop" em ' +
+      'sistema existente (gera relatório HTML com demos). React, Framer Motion, CSS ou HTML.',
+    {
+      sourceRepo: 'kylezantos/design-motion-principles',
+      sourceUrl:
+        'https://github.com/kylezantos/design-motion-principles/tree/main/skills/design-motion-principles',
+      rawUrl:
+        'https://raw.githubusercontent.com/kylezantos/design-motion-principles/main/skills/design-motion-principles/SKILL.md',
+      official: false,
+    },
+  ),
+  externalEntry(
+    'ui-animation',
+    'Animação de UI (criar/revisar/debugar)',
+    'Cria, revisa, debuga e reverse-engenharia motion de UI: transição CSS, keyframes, spring, ' +
+      'gesture, drag, easing, timing, Framer Motion — inclusive a partir de gravação de tela.',
+    {
+      sourceRepo: 'mblode/agent-skills',
+      sourceUrl: 'https://github.com/mblode/agent-skills/tree/main/skills/ui-animation',
+      rawUrl: 'https://raw.githubusercontent.com/mblode/agent-skills/main/skills/ui-animation/SKILL.md',
+      official: false,
+    },
+  ),
+  externalEntry(
+    'animation-designer',
+    'Designer de animação (Framer Motion)',
+    'Padrões prontos de animação de UI, efeito de scroll e micro-interação com Framer Motion e CSS, ' +
+      'focado em React.',
+    {
+      sourceRepo: 'daffy0208/ai-dev-standards',
+      sourceUrl: 'https://github.com/daffy0208/ai-dev-standards/tree/main/skills/animation-designer',
+      rawUrl:
+        'https://raw.githubusercontent.com/daffy0208/ai-dev-standards/main/skills/animation-designer/SKILL.md',
+      official: false,
     },
   ),
 ])

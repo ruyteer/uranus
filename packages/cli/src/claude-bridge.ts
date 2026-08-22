@@ -332,6 +332,17 @@ export function renderClaudeMdBody(input: ClaudeMdInput): string {
       'aba Grafo) mostra o mesmo grafo, com comunidades e god nodes — é um snapshot de quando a skill rodou por ' +
       'último, então atualize com `/graphify --update` quando o código tiver mudado bastante desde a última vez.',
     '',
+    '## Skills',
+    '',
+    'Skill instalada em `.claude/skills/<id>/SKILL.md` o Claude Code já lê e usa sozinho quando a ' +
+      'descrição bate com a tarefa — isso é nativo, não precisa pedir. O que não é automático é ' +
+      'PERCEBER que falta uma: antes de começar uma subtask fora do dia a dia do código (design ' +
+      'visual, motion, gerar/editar PDF-DOCX-XLSX-PPTX, redigir comunicação, etc.), pare um instante ' +
+      'e confira `.claude/skills/` — se não tiver nada que sirva, isso é o sinal para agir, não para ' +
+      'seguir sem: rode `/find-skills` (skill oficial da vercel-labs) se ela estiver instalada, ou, se ' +
+      'não estiver, entre no painel (`uranus dashboard` → aba Skills) e instale a que faltar antes de ' +
+      'continuar a subtask.',
+    '',
     '## Catálogo de agentes',
     '',
     '| agente | modelo | quando usar |',
