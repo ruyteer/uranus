@@ -15,6 +15,11 @@ export const GROUP_ORDER = ['attention', 'working', 'queued', 'finished']
 
 /** Colunas do kanban. O rótulo de cada CARTÃO vem do servidor; isto é layout. */
 export const BACKLOG_COLUMNS = [
+  {
+    state: 'suggested',
+    label: 'Sugestões',
+    hint: 'Veio de uma análise automática — aceite arrastando pra "Aberto" ou descarte arrastando pra "Descartado".',
+  },
   { state: 'open', label: 'Aberto', hint: 'Ainda não virou plano.' },
   { state: 'planned', label: 'Planejado', hint: 'Já tem tasks derivadas.' },
   { state: 'done', label: 'Concluído', hint: 'Todas as tasks terminaram.' },
@@ -70,7 +75,7 @@ export function taskMetrics(items) {
 }
 
 export function backlogMetrics(items) {
-  const counts = { open: 0, planned: 0, done: 0, dropped: 0 }
+  const counts = { suggested: 0, open: 0, planned: 0, done: 0, dropped: 0 }
   let subtasksDone = 0
   let subtasksTotal = 0
   for (const item of items) {
@@ -83,7 +88,8 @@ export function backlogMetrics(items) {
   }
   // Item descartado sai do denominador: ele não é trabalho pendente nem
   // trabalho entregue, e mantê-lo derrubaria a taxa por uma decisão de não
-  // fazer — que é o oposto de um problema.
+  // fazer — que é o oposto de um problema. Sugestão sai pelo mesmo motivo:
+  // ainda não foi aceita, então não é nem fila nem entrega.
   const considered = counts.open + counts.planned + counts.done
   return {
     ...counts,

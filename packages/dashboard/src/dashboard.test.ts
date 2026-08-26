@@ -106,6 +106,7 @@ class FakeHumanGate implements HumanGate {
 class FakeData implements DashboardData {
   readonly taskList: Task[] = []
   readonly itemList: StoredBacklogItemLike[] = []
+  readonly attachments = new Map<string, { contentType: string; body: Buffer }>()
   readonly values: Record<string, unknown> = { 'validations.rules.tests': 'advisory' }
   readonly writes: { path: string; value: unknown }[] = []
 
@@ -162,12 +163,14 @@ class FakeData implements DashboardData {
       body: string
       priority?: number
       labels?: string[]
+      images?: string[]
     }): Promise<Result<StoredBacklogItemLike>> => {
       const item: StoredBacklogItemLike = {
         id: `item-${this.itemList.length + 1}`,
         title: input.title,
         body: input.body,
         labels: input.labels ?? [],
+        images: input.images ?? [],
         priority: input.priority ?? 50,
         source: 'manual',
         state: 'open',
@@ -195,6 +198,13 @@ class FakeData implements DashboardData {
       this.itemList.splice(index, 1)
       return Promise.resolve(ok())
     },
+    saveAttachment: (input: { filename: string; data: Buffer }) => {
+      if (!/\.(png|jpg|jpeg|gif|webp)$/i.test(input.filename)) return Promise.resolve(undefined)
+      const stored = `aaaaaaaa-${input.filename}`
+      this.attachments.set(stored, { contentType: 'image/png', body: input.data })
+      return Promise.resolve({ path: `/fake/attachments/${stored}`, filename: stored })
+    },
+    readAttachment: (filename: string) => Promise.resolve(this.attachments.get(filename)),
   }
 
   readonly config = {
@@ -1220,6 +1230,70 @@ describe('backlog pela dashboard', () => {
 
         expect((await send('DELETE', `/api/backlog/${item.id}`)).status).toBe(200)
         expect(data.itemList).toHaveLength(0)
+      },
+      { data },
+    )
+  })
+
+  it('aceita imagens na criação e no PATCH, e "suggested" como estado válido', async () => {
+    const data = new FakeData()
+    await withDashboard(
+      async ({ send }) => {
+        const criado = await send('POST', '/api/backlog', {
+          title: 'Achado da análise',
+          body: 'descrição',
+          images: ['C:\\bug.png', '  D:\\tela.png  ', ''],
+        })
+        expect(criado.status).toBe(201)
+        const { item } = (await criado.json()) as { item: { id: string; images: string[] } }
+        expect(item.images).toEqual(['C:\\bug.png', 'D:\\tela.png'])
+
+        const sugerido = await send('PATCH', `/api/backlog/${item.id}`, { state: 'suggested' })
+        expect(sugerido.status).toBe(200)
+        expect(((await sugerido.json()) as { item: { stateLabel: string } }).item.stateLabel).toBe(
+          'Sugestão',
+        )
+
+        const semImagem = await send('PATCH', `/api/backlog/${item.id}`, { images: [] })
+        expect(semImagem.status).toBe(200)
+        expect(((await semImagem.json()) as { item: { images: string[] } }).item.images).toEqual([])
+      },
+      { data },
+    )
+  })
+
+  it('POST /api/backlog/attachments grava a imagem enviada e GET devolve os bytes de volta', async () => {
+    const data = new FakeData()
+    await withDashboard(
+      async ({ send, get }) => {
+        const dataBase64 = Buffer.from('conteudo-fake-de-imagem').toString('base64')
+
+        const enviado = await send('POST', '/api/backlog/attachments', {
+          filename: 'foto.png',
+          dataBase64,
+        })
+        expect(enviado.status).toBe(201)
+        const saved = (await enviado.json()) as { path: string; filename: string }
+        expect(saved.filename).toBe('aaaaaaaa-foto.png')
+
+        const lido = await get(`/api/backlog/attachments/${saved.filename}`)
+        expect(lido.status).toBe(200)
+        expect(lido.headers.get('content-type')).toContain('image/png')
+        expect(Buffer.from(await lido.arrayBuffer()).toString()).toBe('conteudo-fake-de-imagem')
+
+        const semCampo = await send('POST', '/api/backlog/attachments', { filename: 'foto.png' })
+        expect(semCampo.status).toBe(400)
+
+        const naoImagem = await send('POST', '/api/backlog/attachments', {
+          filename: 'script.exe',
+          dataBase64,
+        })
+        expect(naoImagem.status).toBe(400)
+
+        expect((await get('/api/backlog/attachments/nao-existe.png')).status).toBe(404)
+        // "attachments" some segmento (sem nome de arquivo) não é 404 de anexo — é 405, o
+        // mesmo tratamento que qualquer outro verbo errado na coleção.
+        expect((await send('DELETE', '/api/backlog/attachments')).status).toBe(405)
       },
       { data },
     )

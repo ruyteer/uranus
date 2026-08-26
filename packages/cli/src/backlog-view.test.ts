@@ -192,6 +192,20 @@ describe('renderBacklogShow', () => {
     expect(texto).toContain('backlog.maxPlanningFailures: 2')
   })
 
+  it('lista as imagens anexadas com a instrução de abrir', () => {
+    const item = makeItem({ images: ['C:\\bug.png', 'D:\\tela.png'] })
+    const texto = renderBacklogShow(item, [], 2).join('\n')
+
+    expect(texto).toMatch(/abra cada uma/i)
+    expect(texto).toContain('C:\\bug.png')
+    expect(texto).toContain('D:\\tela.png')
+  })
+
+  it('sem imagens, não menciona a seção', () => {
+    const texto = renderBacklogShow(makeItem(), [], 2).join('\n')
+    expect(texto).not.toMatch(/imagens anexadas/i)
+  })
+
   it('distingue "ainda não planejado" de "o plano não gerou task"', () => {
     expect(renderBacklogShow(makeItem(), [], 2).join('\n')).toContain('ainda não foi planejado')
     expect(

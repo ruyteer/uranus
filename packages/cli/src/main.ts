@@ -513,11 +513,16 @@ backlog
   .description('Adiciona um item ao backlog (sem o título, pergunta no terminal)')
   .option('--body <text>', 'descrição do que precisa ser feito', '')
   .option('--label <label...>', 'labels')
+  .option('--image <path...>', 'caminho de imagem no disco (pode repetir) — sem upload, só a referência')
   .option('--priority <n>', 'prioridade 0-100', (v) => Number.parseInt(v, 10), 50)
+  .option(
+    '--suggestion',
+    'cria como sugestão (estado "suggested"): fica fora do planejamento automático até o humano aceitar',
+  )
   .action(
     async (
       title: string | undefined,
-      options: { body: string; label?: string[]; priority: number },
+      options: { body: string; label?: string[]; image?: string[]; priority: number; suggestion?: boolean },
     ) => {
       // Perguntar ANTES de compor: montar a composição carrega plugins,
       // providers e digest — meio minuto entre o comando e a primeira pergunta.
@@ -528,6 +533,7 @@ backlog
               title,
               body: options.body,
               labels: options.label ?? [],
+              images: options.image ?? [],
               priority: options.priority,
             }
       if (entrada === undefined) {
@@ -538,6 +544,7 @@ backlog
       await withComposition(async ({ composition }) => {
         const added = await composition.backlog.add({
           ...entrada,
+          ...(options.suggestion ? { state: 'suggested' as const } : {}),
           createdAt: systemClock.now(),
         })
         if (!added.ok) {
@@ -1132,6 +1139,58 @@ program
     })
   })
 
+/**
+ * Prompts iniciais dos "Claudes com propósito" da aba Terminal do painel.
+ *
+ * Cada um vira `args: [prompt]` de um `TerminalSpawnOptions` — o mesmo
+ * mecanismo que `uranus chat [args...]` já usa pra repassar argumento pro
+ * binário do `claude` (ele abre a sessão interativa já com essa primeira
+ * mensagem). Não é um agente novo nem um modo de execução novo: é o mesmo
+ * `claude` de sempre, só que a pessoa não precisa digitar o pedido a cada
+ * sessão.
+ */
+const CLAUDE_BACKLOG_PROMPT =
+  'Você está numa sessão dedicada a executar o backlog deste projeto. Rode `uranus backlog list` ' +
+  'para ver os itens abertos, escolha o de maior prioridade (ou o que fizer mais sentido) e comece ' +
+  'a trabalhar nele seguindo a metodologia DDD e as instruções do CLAUDE.md do projeto. Quando ' +
+  'terminar o item, volte ao backlog e veja se apareceu mais algum pronto pra pegar antes de encerrar ' +
+  'a sessão.'
+
+const CLAUDE_REVIEW_PROMPT =
+  'Você está numa sessão dedicada a revisar Pull Requests abertas nos repositórios deste projeto. ' +
+  'Liste as PRs abertas (via `gh pr list` ou a aba GitHub do painel) e revise cada uma buscando bug, ' +
+  'falha de segurança e código mal feito — deixe comentários de review claros e acionáveis. Não faça ' +
+  'merge sem que o humano peça explicitamente.'
+
+const CLAUDE_SUGGEST_PROMPT =
+  'Você é o AGENTE PRINCIPAL de uma sessão dedicada a analisar este projeto continuamente e ' +
+  'SUGERIR melhorias — nunca implementá-las. Você orquestra; quem lê o código é a sua equipe.\n\n' +
+  'Método, a cada rodada:\n' +
+  '1. Divida o projeto em setores (ex.: frontend, backend, segurança, bugs, melhorias de feature, ' +
+  'design/UX, performance, testes/cobertura — ajuste à realidade deste projeto; nem todo setor se ' +
+  'aplica a todo projeto, e um projeto grande pede mais gente por setor que um pequeno).\n' +
+  '2. Para cada setor, use a ferramenta de subagente (Task/Agent) para abrir VÁRIOS agentes daquele ' +
+  'setor em paralelo — cada um olhando uma fatia diferente do código (um módulo, uma pasta, uma ' +
+  'camada), não o projeto inteiro repetido. Como referência de tamanho de equipe (ajuste ao projeto ' +
+  'real, isto é exemplo, não regra fixa): 3 de frontend, 4 de backend, 2 de segurança, 5 de bugs, 3 ' +
+  'de melhoria de feature, 2 de design. Lance os agentes de um mesmo setor numa ÚNICA mensagem com ' +
+  'várias chamadas de Task/Agent — é isso que os roda em paralelo de verdade, e não um atrás do ' +
+  'outro.\n' +
+  '3. Cada subagente é SOMENTE LEITURA: lê código, procura bug, falha de segurança, código mal ' +
+  'feito, padrão inconsistente, dívida técnica e oportunidade de feature no seu setor/fatia, e ' +
+  'devolve um relatório curto — achado, arquivo/linha, por que importa. Nenhum subagente edita ' +
+  'arquivo nenhum.\n' +
+  '4. Você (agente principal) recebe os relatórios de todos os setores, remove duplicata e acha que ' +
+  'não vale a pena, e só então registra os achados de verdade. Antes de registrar, rode ' +
+  '`uranus backlog list` pra não recriar uma sugestão que já está lá de uma rodada anterior.\n' +
+  '5. Para cada achado que sobrar, registre um item com ' +
+  '`uranus backlog add "título" --body "..." --label <setor> --suggestion`, escrevendo o corpo em ' +
+  'duas partes: primeiro uma explicação simples, pra quem não é técnico, do que é e por que importa; ' +
+  'depois uma seção técnica com o detalhe (arquivo, linha, como reproduzir e como corrigir).\n\n' +
+  'Nunca implemente a sugestão você mesmo, nem deixe um subagente implementar — a função inteira ' +
+  'desta sessão é achar e explicar, não corrigir. Depois de cobrir os setores desta rodada, comece ' +
+  'outra rodada — a análise é contínua, não um passe único.'
+
 async function serveDashboard(
   composition: Awaited<ReturnType<typeof compose>>,
   port?: number,
@@ -1161,13 +1220,33 @@ async function serveDashboard(
         pause: () => composition.kernel.pause(),
         resume: () => composition.kernel.resume(),
       },
-      // A aba Terminal abre um destes dois no navegador: a mesma sessão do
-      // `uranus chat` (orquestrador), ou um shell puro para comandos soltos.
+      // A aba Terminal abre um destes no navegador: o painel agrupa os
+      // perfis `claude*` num modal de propósito ("executar backlog",
+      // "revisar PRs", "sugerir melhorias", ou sessão livre) e mantém
+      // `shell` como um botão direto, pra comando solto.
       terminalProfiles: {
         claude: {
           command: claudeBinary,
           cwd: composition.project.rootDir,
-          label: 'claude',
+          label: 'claude · sessão livre',
+        },
+        'claude-backlog': {
+          command: claudeBinary,
+          args: [CLAUDE_BACKLOG_PROMPT],
+          cwd: composition.project.rootDir,
+          label: 'claude · backlog',
+        },
+        'claude-review': {
+          command: claudeBinary,
+          args: [CLAUDE_REVIEW_PROMPT],
+          cwd: composition.project.rootDir,
+          label: 'claude · review de PRs',
+        },
+        'claude-suggest': {
+          command: claudeBinary,
+          args: [CLAUDE_SUGGEST_PROMPT],
+          cwd: composition.project.rootDir,
+          label: 'claude · sugestões',
         },
         shell: {
           command: process.platform === 'win32' ? 'cmd.exe' : (process.env['SHELL'] ?? '/bin/sh'),
@@ -1207,6 +1286,7 @@ interface ItemDeBacklogInformado {
   readonly title: string
   readonly body: string
   readonly labels: readonly string[]
+  readonly images?: readonly string[]
   readonly priority: number
 }
 

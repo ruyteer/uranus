@@ -86,6 +86,7 @@ export interface DashboardBacklogPort {
     body: string
     priority?: number
     labels?: string[]
+    images?: string[]
   }): Promise<Result<StoredBacklogItemLike>>
   /**
    * O patch é validado por esta camada antes de chegar aqui: só as chaves
@@ -95,6 +96,21 @@ export interface DashboardBacklogPort {
    */
   update(id: string, patch: Record<string, unknown>): Promise<Result<StoredBacklogItemLike>>
   remove(id: string): Promise<Result<void>>
+  /**
+   * Grava uma imagem escolhida/arrastada no painel como arquivo de verdade
+   * em disco, e devolve o caminho — é isto que vira uma entrada de
+   * `images` num item. `undefined` quando a extensão não é de imagem
+   * conhecida (o painel mostra o erro; não é uma falha de infra).
+   */
+  saveAttachment(input: { filename: string; data: Buffer }): Promise<BacklogAttachmentLike | undefined>
+  /** `undefined`: nome desconhecido ou arquivo não existe — a rota devolve 404. */
+  readAttachment(filename: string): Promise<{ contentType: string; body: Buffer } | undefined>
+}
+
+/** Estrutural: `SavedAttachment` de `@uranus/backlog` se encaixa como está. */
+export interface BacklogAttachmentLike {
+  readonly path: string
+  readonly filename: string
 }
 
 /** Estrutural: `StoredBacklogItem` de `@uranus/backlog` se encaixa como está. */
@@ -103,6 +119,7 @@ export interface StoredBacklogItemLike {
   readonly title: string
   readonly body: string
   readonly labels: readonly string[]
+  readonly images?: readonly string[]
   readonly priority: number
   readonly source: string
   readonly state: string

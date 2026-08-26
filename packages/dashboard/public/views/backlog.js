@@ -7,13 +7,14 @@
  * item nunca virou task?" só se responde lendo log.
  */
 import { clear, h } from '../lib/dom.js'
-import { api, apiPath } from '../lib/api.js'
+import { api, apiPath, qs } from '../lib/api.js'
 import {
   button,
   card,
   confirmDialog,
   closeModal,
   empty,
+  field,
   kpis,
   notice,
   openModal,
@@ -88,6 +89,158 @@ async function removeItem(ctx, item) {
 
 // ── formulários ──────────────────────────────────────────────────────────────
 
+/** `C:\a\b\foto.png` ou `/a/b/foto.png` → `foto.png`. */
+function basename(path) {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return cut === -1 ? path : path.slice(cut + 1)
+}
+
+/** Caminho salvo → URL de leitura no próprio painel, pra miniatura. */
+function attachmentUrl(path) {
+  return `/api/backlog/attachments/${encodeURIComponent(basename(path))}${qs}`
+}
+
+/** `File` → base64 sem o prefixo `data:...;base64,`. */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result ?? '')
+      const comma = result.indexOf(',')
+      resolve(comma === -1 ? result : result.slice(comma + 1))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler o arquivo.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * Seletor de imagens: arrastar-e-soltar ou clicar pra escolher do disco.
+ *
+ * O navegador não expõe o caminho absoluto de um arquivo escolhido — por
+ * isso o arquivo é enviado de verdade (base64, `POST /api/backlog/attachments`)
+ * e o painel grava em `.uranus/backlog/attachments/`; o que `get()` devolve é
+ * o caminho REAL desse arquivo gravado, que é o que o Claude depois lê.
+ *
+ * `initial` são caminhos já salvos (edição de um item existente) — mostrados
+ * como miniatura buscada de volta no próprio painel, sem reenviar nada.
+ */
+function imagesField(initial) {
+  const items = asArray(initial).map((path) => ({
+    path,
+    name: basename(path),
+    previewUrl: attachmentUrl(path),
+    status: 'done',
+  }))
+
+  const list = h('div', { class: 'imagepicker__list' })
+  const input = h('input', {
+    type: 'file',
+    accept: 'image/*',
+    multiple: true,
+    style: { display: 'none' },
+    on: {
+      change: () => {
+        void addFiles(input.files)
+        input.value = ''
+      },
+    },
+  })
+  const drop = h(
+    'div',
+    {
+      class: 'imagepicker__drop',
+      tabindex: '0',
+      role: 'button',
+      on: {
+        click: () => input.click(),
+        keydown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            input.click()
+          }
+        },
+        dragover: (event) => {
+          event.preventDefault()
+          drop.classList.add('is-over')
+        },
+        dragleave: () => drop.classList.remove('is-over'),
+        drop: (event) => {
+          event.preventDefault()
+          drop.classList.remove('is-over')
+          void addFiles(event.dataTransfer?.files)
+        },
+      },
+    },
+    h('span', { text: 'Arraste imagens aqui ou clique para escolher do computador' }),
+  )
+
+  function renderList() {
+    clear(list)
+    for (const item of items) {
+      const remove = h('div', {
+        class: 'imagepicker__remove',
+        text: '×',
+        title: 'Remover',
+        on: {
+          click: (event) => {
+            event.stopPropagation()
+            items.splice(items.indexOf(item), 1)
+            renderList()
+          },
+        },
+      })
+      list.append(
+        h(
+          'div',
+          { class: 'imagepicker__chip' },
+          h('img', {
+            class: `imagepicker__thumb${item.status === 'uploading' ? ' imagepicker__thumb--pending' : ''}`,
+            src: item.previewUrl,
+            alt: item.name,
+            on: { error: (event) => { event.target.style.visibility = 'hidden' } },
+          }),
+          h('span', { class: 'imagepicker__name', text: item.status === 'uploading' ? 'enviando…' : item.name }),
+          remove,
+        ),
+      )
+    }
+  }
+
+  async function addFiles(fileList) {
+    for (const file of Array.from(fileList ?? [])) {
+      if (!file.type.startsWith('image/')) {
+        toastError(new Error(`"${file.name}" não é uma imagem.`))
+        continue
+      }
+      const item = { path: undefined, name: file.name, previewUrl: URL.createObjectURL(file), status: 'uploading' }
+      items.push(item)
+      renderList()
+      try {
+        const dataBase64 = await fileToBase64(file)
+        const saved = await api.post('/api/backlog/attachments', { filename: file.name, dataBase64 })
+        item.path = saved.path
+        item.status = 'done'
+      } catch (error) {
+        items.splice(items.indexOf(item), 1)
+        toastError(error)
+      }
+      renderList()
+    }
+  }
+
+  renderList()
+  return {
+    el: field({
+      label: 'Imagens',
+      help: 'Pra explicar visualmente — o Claude abre cada uma quando trabalhar no item.',
+      control: h('div', { class: 'stack' }, drop, input, list),
+    }),
+    get: () => items.filter((item) => item.status === 'done').map((item) => item.path),
+    isUploading: () => items.some((item) => item.status === 'uploading'),
+  }
+}
+
 function openCreate(ctx) {
   const title = textField({
     label: 'O que precisa acontecer',
@@ -114,6 +267,7 @@ function openCreate(ctx) {
     help: 'Separadas por vírgula. Servem para você filtrar depois; não mudam o comportamento.',
     placeholder: 'relatorios, ux',
   })
+  const images = imagesField()
   const errorBox = h('div', { class: 'field__error' })
 
   const submit = button({
@@ -124,6 +278,10 @@ function openCreate(ctx) {
       clear(errorBox)
       if (title.get() === '') {
         errorBox.textContent = 'O título é obrigatório.'
+        return
+      }
+      if (images.isUploading()) {
+        errorBox.textContent = 'Espere as imagens terminarem de enviar.'
         return
       }
       submit.disabled = true
@@ -137,6 +295,7 @@ function openCreate(ctx) {
             .split(',')
             .map((value) => value.trim())
             .filter((value) => value !== ''),
+          images: images.get(),
         })
         closeModal()
       } catch (error) {
@@ -150,7 +309,7 @@ function openCreate(ctx) {
     title: 'Novo item de backlog',
     subtitle: 'Descreva o problema. O plano e as tasks o Uranus deriva daqui.',
     wide: true,
-    body: h('div', { class: 'form' }, title.el, body.el, priority.el, labels.el, errorBox),
+    body: h('div', { class: 'form' }, title.el, body.el, priority.el, labels.el, images.el, errorBox),
     footer: [button({ label: 'Cancelar', onClick: () => closeModal() }), submit],
   })
 }
@@ -171,6 +330,7 @@ function openEdit(ctx, item) {
     value: item.state,
     options: STATE_OPTIONS,
   })
+  const images = imagesField(item.images)
   const errorBox = h('div', { class: 'field__error' })
 
   const submit = button({
@@ -178,6 +338,10 @@ function openEdit(ctx, item) {
     variant: 'primary',
     onClick: async () => {
       clear(errorBox)
+      if (images.isUploading()) {
+        errorBox.textContent = 'Espere as imagens terminarem de enviar.'
+        return
+      }
       submit.disabled = true
       try {
         await patchItem(ctx, item.id, {
@@ -185,6 +349,7 @@ function openEdit(ctx, item) {
           body: body.get(),
           priority: priority.get() ?? item.priority ?? 50,
           state: state.get(),
+          images: images.get(),
         })
         toast('Item atualizado.', 'success')
         closeModal()
@@ -199,7 +364,7 @@ function openEdit(ctx, item) {
     title: 'Editar item',
     subtitle: item.id,
     wide: true,
-    body: h('div', { class: 'form' }, title.el, body.el, priority.el, state.el, errorBox),
+    body: h('div', { class: 'form' }, title.el, body.el, priority.el, state.el, images.el, errorBox),
     footer: [button({ label: 'Cancelar', onClick: () => closeModal() }), submit],
   })
 }
@@ -220,6 +385,30 @@ function openDetail(ctx, item) {
       ...asArray(item.labels).map((tag) => pill(tag, 'neutral')),
     ),
     item.body ? h('p', { class: 'prose', text: item.body }) : null,
+    asArray(item.images).length > 0
+      ? h(
+          'div',
+          { class: 'stack' },
+          h('h3', { class: 'section__title', text: 'Imagens anexadas' }),
+          h(
+            'div',
+            { class: 'imagepicker__list' },
+            ...asArray(item.images).map((path) =>
+              h(
+                'div',
+                { class: 'imagepicker__chip' },
+                h('img', {
+                  class: 'imagepicker__thumb',
+                  src: attachmentUrl(path),
+                  alt: basename(path),
+                  on: { error: (event) => { event.target.style.visibility = 'hidden' } },
+                }),
+                h('span', { class: 'imagepicker__name', title: path, text: basename(path) }),
+              ),
+            ),
+          ),
+        )
+      : null,
     h(
       'dl',
       { class: 'deflist' },
@@ -333,6 +522,9 @@ function kanbanCard(ctx, item, writable) {
       { class: 'kcard__meta' },
       pill(`p${String(item.priority ?? 0)}`, 'neutral'),
       ...asArray(item.labels).slice(0, 2).map((tag) => pill(tag, 'neutral')),
+      asArray(item.images).length > 0
+        ? pill(`${String(asArray(item.images).length)} imagem(ns)`, 'neutral')
+        : null,
       item.createdLabel ? h('span', { text: `criado ${item.createdLabel}` }) : null,
     ),
     progress && Number(progress.total ?? 0) > 0

@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { parseDocument } from 'yaml'
 import type {
   Logger,
@@ -21,6 +22,7 @@ import {
   transition,
 } from '@uranus/core'
 import { loadConfig } from '@uranus/config'
+import { BacklogAttachmentStore } from '@uranus/backlog'
 import type { FileBacklogStore, StoredBacklogItem } from '@uranus/backlog'
 import type { DashboardData } from '@uranus/dashboard'
 import type { StateStore } from '@uranus/state'
@@ -83,6 +85,11 @@ export interface DashboardDataDeps {
  * arquivo de configuração. Ele recebe operações, não repositórios.
  */
 export function createDashboardData(deps: DashboardDataDeps): DashboardData {
+  const attachments = new BacklogAttachmentStore({
+    dir: join(deps.projectDir, '.uranus', 'backlog', 'attachments'),
+    logger: deps.logger,
+  })
+
   return {
     tasks: {
       list: () => deps.state.tasks.all(),
@@ -195,6 +202,7 @@ export function createDashboardData(deps: DashboardDataDeps): DashboardData {
           body: input.body,
           ...(input.priority === undefined ? {} : { priority: input.priority }),
           ...(input.labels === undefined ? {} : { labels: input.labels }),
+          ...(input.images === undefined ? {} : { images: input.images }),
           createdAt: deps.now(),
         })
       },
@@ -221,12 +229,18 @@ export function createDashboardData(deps: DashboardDataDeps): DashboardData {
           ...(Array.isArray(patch['labels'])
             ? { labels: (patch['labels'] as unknown[]).map(String) }
             : {}),
+          ...(Array.isArray(patch['images'])
+            ? { images: (patch['images'] as unknown[]).map(String) }
+            : {}),
         }
         const written = await deps.backlog.update(atualizado)
         return written.ok ? ok(atualizado) : err(written.error)
       },
 
       remove: (id) => deps.backlog.remove(id),
+
+      saveAttachment: (input) => attachments.save(input.filename, input.data),
+      readAttachment: (filename) => attachments.read(filename),
     },
 
     config: {
@@ -458,7 +472,13 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function isItemState(value: unknown): value is StoredBacklogItem['state'] {
-  return value === 'open' || value === 'planned' || value === 'done' || value === 'dropped'
+  return (
+    value === 'suggested' ||
+    value === 'open' ||
+    value === 'planned' ||
+    value === 'done' ||
+    value === 'dropped'
+  )
 }
 
 function valueAt(data: unknown, path: string): unknown {

@@ -11,7 +11,13 @@ export interface BacklogStoreOptions {
   readonly logger: Logger
 }
 
-export type BacklogItemState = 'open' | 'planned' | 'done' | 'dropped'
+/**
+ * `suggested`: achado de uma sessão de análise automática (ver painel, aba
+ * Terminal → "Claude · sugestões"). Fica de fora do planejamento automático
+ * (`nextPlannable` só considera `open`) até o humano aceitar arrastando pra
+ * "Aberto" — ou descartar arrastando pra "Descartado".
+ */
+export type BacklogItemState = 'suggested' | 'open' | 'planned' | 'done' | 'dropped'
 
 export interface StoredBacklogItem extends BacklogItem {
   readonly state: BacklogItemState
@@ -53,10 +59,13 @@ export class FileBacklogStore {
     title: string
     body: string
     labels?: readonly string[]
+    images?: readonly string[]
     priority?: number
     source?: BacklogItem['source']
     externalRef?: string
     createdAt: number
+    /** Default `'open'`. Sessão de sugestões usa `'suggested'`. */
+    state?: BacklogItemState
   }): Promise<Result<StoredBacklogItem>> {
     if (input.title.trim() === '') {
       return err(new ValidationError('Item de backlog precisa de título.'))
@@ -68,11 +77,12 @@ export class FileBacklogStore {
       title: input.title.trim(),
       body: input.body.trim(),
       labels: input.labels ?? [],
+      images: input.images ?? [],
       priority: input.priority ?? 50,
       source: input.source ?? 'manual',
       ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef }),
       createdAt: input.createdAt,
-      state: 'open',
+      state: input.state ?? 'open',
     }
     const written = await this.write(item)
     return written.ok ? ok(item) : written
@@ -207,6 +217,7 @@ export class FileBacklogStore {
       title,
       body: typeof data['body'] === 'string' ? data['body'] : '',
       labels: Array.isArray(data['labels']) ? (data['labels'] as string[]).map(String) : [],
+      images: Array.isArray(data['images']) ? (data['images'] as string[]).map(String) : [],
       priority: typeof data['priority'] === 'number' ? data['priority'] : 50,
       source: (typeof data['source'] === 'string'
         ? data['source']

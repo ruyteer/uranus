@@ -7,6 +7,8 @@ import { parseMarkdownBacklog } from './markdown-source.js'
 import { validatePlan, topologicalSort, type PlanValidationOptions } from './plan-validator.js'
 import type { PlannerOutput, PlannerTask } from './plan-schema.js'
 import { backlogProgress } from './progress.js'
+import { formatImagesNote } from './images.js'
+import { BacklogAttachmentStore } from './attachments.js'
 import { FileBacklogStore } from './store.js'
 import {
   createCrossProjectItem,
@@ -623,7 +625,100 @@ describe('FileBacklogStore', () => {
       expect(found?.priority).toBe(70)
       expect(found?.planningFailures).toBeUndefined()
       expect(found?.startedAt).toBeUndefined()
+      expect(found?.images).toEqual([])
     })
+  })
+
+  it('caminhos de imagem sobrevivem ao round-trip YAML', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const item = unwrap(
+        await store.add({
+          title: 'Com print',
+          body: 'olha o print',
+          images: ['C:\\Users\\voce\\bug.png', '/home/voce/outro.png'],
+          createdAt: 1,
+        }),
+      )
+
+      const found = await makeStore(dir).get(item.id)
+      expect(found?.images).toEqual(['C:\\Users\\voce\\bug.png', '/home/voce/outro.png'])
+    })
+  })
+
+  it('nasce "suggested" quando pedido — e fora do planejamento automático (list("open") não pega)', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const item = unwrap(
+        await store.add({ title: 'Achado da análise', body: '', state: 'suggested', createdAt: 1 }),
+      )
+      expect(item.state).toBe('suggested')
+
+      const found = await makeStore(dir).get(item.id)
+      expect(found?.state).toBe('suggested')
+      expect(await store.list('open')).toEqual([])
+      expect(await store.list('suggested')).toHaveLength(1)
+    })
+  })
+})
+
+describe('BacklogAttachmentStore', () => {
+  function makeStore(dir: string): BacklogAttachmentStore {
+    return new BacklogAttachmentStore({ dir: join(dir, 'attachments'), logger: silentLogger })
+  }
+
+  it('salva uma imagem e lê de volta os mesmos bytes com o content-type certo', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const saved = await store.save('print do bug.PNG', Buffer.from('fake-png-bytes'))
+      expect(saved).toBeDefined()
+      expect(saved?.filename).toMatch(/^[a-z0-9]{8}-print-do-bug\.png$/)
+
+      const read = await store.read(saved!.filename)
+      expect(read?.contentType).toBe('image/png')
+      expect(read?.body.toString()).toBe('fake-png-bytes')
+    })
+  })
+
+  it('rejeita extensão que não é de imagem', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      expect(await store.save('script.exe', Buffer.from('x'))).toBeUndefined()
+      expect(await store.save('sem-extensao', Buffer.from('x'))).toBeUndefined()
+    })
+  })
+
+  it('read() recusa qualquer nome que não seja o formato que save() gera (sem traversal)', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      expect(await store.read('../../etc/passwd')).toBeUndefined()
+      expect(await store.read('..%2f..%2fpasswd.png')).toBeUndefined()
+      expect(await store.read('inexistente-de-verdade.png')).toBeUndefined()
+    })
+  })
+
+  it('dois uploads com o mesmo nome original não colidem', async () => {
+    await withTempDir(async (dir) => {
+      const store = makeStore(dir)
+      const a = await store.save('foto.png', Buffer.from('a'))
+      const b = await store.save('foto.png', Buffer.from('b'))
+      expect(a?.filename).not.toBe(b?.filename)
+      expect((await store.read(a!.filename))?.body.toString()).toBe('a')
+      expect((await store.read(b!.filename))?.body.toString()).toBe('b')
+    })
+  })
+})
+
+describe('formatImagesNote', () => {
+  it('vazio some sem nota nenhuma', () => {
+    expect(formatImagesNote([])).toEqual([])
+  })
+
+  it('lista os caminhos com a instrução de abrir e analisar', () => {
+    const linhas = formatImagesNote(['a.png', 'b.png'])
+    expect(linhas[0]).toMatch(/abra cada uma/i)
+    expect(linhas).toContain('  - a.png')
+    expect(linhas).toContain('  - b.png')
   })
 })
 

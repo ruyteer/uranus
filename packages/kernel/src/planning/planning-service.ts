@@ -32,6 +32,7 @@ import {
   transition,
 } from '@uranus/core'
 import {
+  formatImagesNote,
   validatePlan,
   type PlanValidationOptions,
   type PlannerOutput,
@@ -430,6 +431,13 @@ export class PlanningService {
     const spec = this.options.agents.get('planner')!
     const now = this.options.clock.now()
 
+    // O Planner fala só em texto (`ApiProvider`, sem visão multimodal) — a
+    // referência à imagem que ele recebe é o caminho, em texto, não o
+    // conteúdo. Ainda assim é melhor que silêncio: sem isto o Planner nem
+    // saberia que o humano anexou algo.
+    const imagesNote = formatImagesNote(item.images ?? [])
+    const itemBody = imagesNote.length === 0 ? item.body : [item.body, '', ...imagesNote].join('\n')
+
     // Task sintética: o Planner precisa de um `Task` para o runtime, mas ela
     // nunca entra na fila nem é persistida — é o veículo do prompt.
     const syntheticTask: Task = {
@@ -437,7 +445,7 @@ export class PlanningService {
       projectId: this.options.project.id,
       kind: 'investigation',
       title: item.title,
-      intent: item.body,
+      intent: itemBody,
       state: 'running',
       priority: item.priority,
       deps: [],
@@ -469,7 +477,7 @@ export class PlanningService {
     // `{{replanContext}}` silenciosamente vazio depois de uma rejeição.
     const promptVariables: Record<string, string> = {
       title: item.title,
-      body: item.body,
+      body: itemBody,
       testRunners:
         this.knownRunners(digest).join(', ') ||
         'nenhum runner detectado — só tarefas de teste são aceitas',

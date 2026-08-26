@@ -1,5 +1,5 @@
 import type { BacklogProgress, BacklogItemState, StoredBacklogItem } from '@uranus/backlog'
-import { backlogProgress } from '@uranus/backlog'
+import { backlogProgress, formatImagesNote } from '@uranus/backlog'
 import type { Task } from '@uranus/core'
 import { taskStateLabel } from '@uranus/core'
 
@@ -12,6 +12,7 @@ import { taskStateLabel } from '@uranus/core'
  */
 
 export const BACKLOG_STATE_LABEL: Readonly<Record<BacklogItemState, string>> = {
+  suggested: 'Sugestão',
   open: 'Aberto',
   planned: 'Planejado',
   done: 'Concluído',
@@ -153,6 +154,11 @@ export function renderBacklogShow(
   if (item.body !== '') {
     linhas.push('')
     linhas.push(item.body)
+  }
+
+  if (item.images !== undefined && item.images.length > 0) {
+    linhas.push('')
+    linhas.push(...formatImagesNote(item.images))
   }
 
   linhas.push('')

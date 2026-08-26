@@ -66,4 +66,11 @@ export interface BacklogItem {
   readonly source: 'file' | 'github' | 'gitlab' | 'linear' | 'manual' | 'review' | 'linked-project'
   readonly externalRef?: string
   readonly createdAt: number
+  /**
+   * Caminhos de imagem no disco — sem upload, só a referência. É o que deixa
+   * o humano explicar um pedido visualmente: o Claude lê o arquivo no
+   * caminho indicado com a própria ferramenta de leitura quando trabalha
+   * neste item.
+   */
+  readonly images?: readonly string[]
 }

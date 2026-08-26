@@ -29,7 +29,11 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
     "style-src 'self' 'unsafe-inline'; " +
     "script-src 'self' 'unsafe-inline'; " +
     "connect-src 'self'; " +
-    "img-src 'self' data:; " +
+    // `blob:` além de `data:`: a miniatura de uma imagem recém-escolhida no
+    // seletor de anexos do backlog usa `URL.createObjectURL(file)` antes do
+    // upload terminar — sem o esquema liberado aqui, o CSP barra a própria
+    // prévia do arquivo que a pessoa acabou de arrastar.
+    "img-src 'self' data: blob:; " +
     "font-src 'self'",
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
@@ -96,18 +100,33 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Teto de corpo aceito. Um painel local não recebe upload; 64 KiB é folga. */
+/** Teto de corpo aceito nas rotas comuns. 64 KiB é folga generosa pra texto. */
 const MAX_BODY = 64 * 1024
 
 export async function readJson(
   request: IncomingMessage,
+): Promise<Record<string, unknown> | undefined> {
+  return readJsonWithLimit(request, MAX_BODY)
+}
+
+/**
+ * Mesma leitura de `readJson`, com teto configurável.
+ *
+ * Existe pra rota de anexo de imagem (`POST /api/backlog/attachments`), cujo
+ * corpo carrega o arquivo em base64 — 64 KiB não cabe nem uma miniatura. As
+ * outras rotas continuam no teto apertado de `readJson`; só quem
+ * explicitamente precisa de mais pede.
+ */
+export async function readJsonWithLimit(
+  request: IncomingMessage,
+  maxBytes: number,
 ): Promise<Record<string, unknown> | undefined> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const buffer = chunk as Buffer
     size += buffer.length
-    if (size > MAX_BODY) return undefined
+    if (size > maxBytes) return undefined
     chunks.push(buffer)
   }
   if (chunks.length === 0) return undefined

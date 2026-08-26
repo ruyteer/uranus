@@ -21,9 +21,11 @@ import { api, apiPath, qs } from '../lib/api.js'
 import {
   button,
   card,
+  closeModal,
   confirmDialog,
   empty,
   notice,
+  openModal,
   page,
   pageHead,
   pill,
@@ -187,6 +189,54 @@ async function createSession(ctx, profile) {
   }
 }
 
+/**
+ * Apresentação dos perfis `claude*` — o texto vem daqui (tela), o prompt
+ * inicial de verdade vem do servidor (`terminalProfiles` em
+ * `packages/cli/src/main.ts`). Perfil sem entrada aqui ainda funciona: cai no
+ * rótulo cru do servidor, sem hint. Hint curto de propósito — uma linha, não
+ * um parágrafo: o modal é pra escolher rápido, não pra ler.
+ */
+const CLAUDE_PURPOSES = {
+  'claude-backlog': { title: 'Executar o backlog', hint: 'Pega o item mais prioritário e trabalha nele.' },
+  'claude-review': { title: 'Revisar PRs abertas', hint: 'Busca bug e falha de segurança nas PRs.' },
+  'claude-suggest': { title: 'Analisar e sugerir', hint: 'Equipe de agentes por setor — achados vão pra coluna "Sugestões".' },
+  claude: { title: 'Sessão livre', hint: 'Sem propósito definido.' },
+}
+
+function purposeRow(ctx, profileId) {
+  const meta = CLAUDE_PURPOSES[profileId] ?? { title: profileId, hint: '' }
+  const open = () => {
+    closeModal()
+    void createSession(ctx, profileId)
+  }
+  return h(
+    'div',
+    {
+      class: 'kcard',
+      tabindex: '0',
+      role: 'button',
+      on: {
+        click: open,
+        keydown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            open()
+          }
+        },
+      },
+    },
+    h('div', { class: 'kcard__title', text: meta.title }),
+    meta.hint ? h('div', { class: 'kcard__meta', text: meta.hint }) : null,
+  )
+}
+
+function openPurposePicker(ctx, profileIds) {
+  openModal({
+    title: 'Nova sessão do Claude',
+    body: h('div', { class: 'stack' }, profileIds.map((id) => purposeRow(ctx, id))),
+  })
+}
+
 async function closeSession(ctx, id) {
   const yes = await confirmDialog({
     title: 'Encerrar esta sessão?',
@@ -243,6 +293,33 @@ function sessionTab(ctx, session) {
   )
 }
 
+/**
+ * Separa perfis `claude*` do resto (ex.: `shell`).
+ *
+ * Função pura só pra decidir agrupamento — o DOM (o modal, os botões) fica em
+ * `render()`. `claudeIds.length > 1` é o que decide entre "um botão por
+ * perfil" (comportamento antigo, e o que ainda vale se só existir um perfil
+ * de claude) e "um botão único que abre o seletor de propósito".
+ */
+export function groupProfiles(profiles) {
+  const claudeIds = profiles.filter((id) => id === 'claude' || id.startsWith('claude-'))
+  const otherIds = profiles.filter((id) => !claudeIds.includes(id))
+  return { claudeIds, otherIds }
+}
+
+function profileButton(ctx, profile) {
+  return button({ label: `+ ${profile}`, iconName: 'plus', onClick: () => createSession(ctx, profile) })
+}
+
+function terminalActions(ctx, profiles) {
+  const { claudeIds, otherIds } = groupProfiles(profiles)
+  const claudeButtons =
+    claudeIds.length > 1
+      ? [button({ label: '+ Claude', iconName: 'plus', onClick: () => openPurposePicker(ctx, claudeIds) })]
+      : claudeIds.map((profile) => profileButton(ctx, profile))
+  return [...claudeButtons, ...otherIds.map((profile) => profileButton(ctx, profile))]
+}
+
 export function render(ctx) {
   const resource = ctx.res('terminals')
 
@@ -265,16 +342,7 @@ export function render(ctx) {
   const head = pageHead({
     title: 'Terminal',
     description: 'Sessões de verdade — o mesmo `claude` ou shell que rodaria no seu terminal.',
-    actions:
-      resource.status === 'unavailable'
-        ? []
-        : profiles.map((profile) =>
-            button({
-              label: `+ ${profile}`,
-              iconName: 'plus',
-              onClick: () => createSession(ctx, profile),
-            }),
-          ),
+    actions: resource.status === 'unavailable' ? [] : terminalActions(ctx, profiles),
   })
 
   if (resource.status === 'unavailable') {
@@ -294,6 +362,7 @@ export function render(ctx) {
   }
 
   if (sessions.length === 0) {
+    const { claudeIds } = groupProfiles(profiles)
     return page(
       head,
       card({
@@ -302,10 +371,13 @@ export function render(ctx) {
           title: 'Nenhuma sessão aberta',
           description: 'Abra uma sessão do Claude ou de um shell — cada uma é um processo de verdade.',
           action: button({
-            label: `Abrir ${profiles[0]}`,
+            label: 'Abrir uma sessão',
             variant: 'primary',
             iconName: 'plus',
-            onClick: () => createSession(ctx, profiles[0]),
+            onClick: () =>
+              claudeIds.length > 1
+                ? openPurposePicker(ctx, claudeIds)
+                : createSession(ctx, profiles[0]),
           }),
         }),
       }),

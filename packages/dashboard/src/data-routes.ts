@@ -10,9 +10,11 @@ import {
 import type { ConfigCategoryLike, DashboardData, StoredBacklogItemLike } from './data.js'
 import { CHECK_KINDS } from './data.js'
 import {
+  SECURITY_HEADERS,
   errorMessage,
   methodNotAllowed,
   readJson,
+  readJsonWithLimit,
   safeDecode,
   sendJson,
   statusForError,
@@ -249,6 +251,34 @@ export class DataRoutes {
       return
     }
 
+    // Precisa vir ANTES de `resourceId`: sem isto, "attachments" seria lido
+    // como um id de item de backlog, não como o segmento fixo desta rota.
+    // Regex e não `resourceId` de propósito: `resourceId` corta por
+    // POSIÇÃO, não por prefixo — um item cujo id comece com "attachments-"
+    // (ex.: título "Attachments no formulário") cairia aqui por engano.
+    if (path === '/api/backlog/attachments') {
+      if (method === 'POST') {
+        await this.uploadAttachment(data, request, response)
+        return
+      }
+      methodNotAllowed(response, ['POST'])
+      return
+    }
+    const attachmentMatch = /^\/api\/backlog\/attachments\/([^/]+)$/.exec(path)
+    if (attachmentMatch !== null) {
+      if (method !== 'GET') {
+        methodNotAllowed(response, ['GET'])
+        return
+      }
+      const filename = safeDecode(attachmentMatch[1] ?? '')
+      if (filename === undefined) {
+        sendJson(response, 400, { error: 'nome de anexo inválido' })
+        return
+      }
+      await this.getAttachment(data, filename, response)
+      return
+    }
+
     const id = resourceId(path, '/api/backlog/')
     if (id === undefined) {
       sendJson(response, 404, { error: 'id de item ausente ou inválido' })
@@ -308,12 +338,18 @@ export class DataRoutes {
       sendJson(response, 400, { error: 'labels deve ser uma lista de texto' })
       return
     }
+    const images = body['images'] === undefined ? undefined : stringList(body['images'])
+    if (body['images'] !== undefined && images === undefined) {
+      sendJson(response, 400, { error: 'images deve ser uma lista de texto' })
+      return
+    }
 
     const created = await data.backlog.create({
       title,
       body: typeof body['body'] === 'string' ? body['body'] : '',
       ...(isPriority(priority) ? { priority } : {}),
       ...(labels === undefined ? {} : { labels: [...labels] }),
+      ...(images === undefined ? {} : { images: [...images] }),
     })
     if (!created.ok) {
       sendJson(response, statusForError(created.error), { error: errorMessage(created.error) })
@@ -344,7 +380,7 @@ export class DataRoutes {
     }
     if (Object.keys(patch).length === 0) {
       sendJson(response, 400, {
-        error: 'nada para atualizar; informe title, body, priority, labels ou state',
+        error: 'nada para atualizar; informe title, body, priority, labels, images ou state',
       })
       return
     }
@@ -358,6 +394,61 @@ export class DataRoutes {
     sendJson(response, 200, {
       item: backlogItemView(updated.value, backlogProgressView(tasks, updated.value), this.now()),
     })
+  }
+
+  private async uploadAttachment(
+    data: DashboardData,
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const body = await readJsonWithLimit(request, MAX_ATTACHMENT_BODY)
+    if (body === undefined) {
+      sendJson(response, 400, {
+        error: 'corpo JSON ausente, inválido ou grande demais (máx. ~15 MB por imagem)',
+      })
+      return
+    }
+    const filename = trimmedString(body['filename'])
+    const dataBase64 = typeof body['dataBase64'] === 'string' ? body['dataBase64'] : undefined
+    if (filename === undefined || dataBase64 === undefined) {
+      sendJson(response, 400, { error: 'informe filename e dataBase64' })
+      return
+    }
+    let decoded: Buffer
+    try {
+      decoded = Buffer.from(dataBase64, 'base64')
+    } catch {
+      sendJson(response, 400, { error: 'dataBase64 inválido' })
+      return
+    }
+    if (decoded.length === 0) {
+      sendJson(response, 400, { error: 'arquivo vazio' })
+      return
+    }
+    const saved = await data.backlog.saveAttachment({ filename, data: decoded })
+    if (saved === undefined) {
+      sendJson(response, 400, { error: 'isto não parece ser uma imagem (extensão desconhecida)' })
+      return
+    }
+    sendJson(response, 201, saved)
+  }
+
+  private async getAttachment(
+    data: DashboardData,
+    filename: string,
+    response: ServerResponse,
+  ): Promise<void> {
+    const asset = await data.backlog.readAttachment(filename)
+    if (asset === undefined) {
+      sendJson(response, 404, { error: 'anexo não encontrado' })
+      return
+    }
+    response.writeHead(200, {
+      'content-type': asset.contentType,
+      'cache-control': 'no-store',
+      ...SECURITY_HEADERS,
+    })
+    response.end(asset.body)
   }
 
   // ── config ────────────────────────────────────────────────────────────────
@@ -954,6 +1045,9 @@ function validationWrite(body: Record<string, unknown>): { path: string; value: 
 
 // ── auxiliares ──────────────────────────────────────────────────────────────
 
+/** ~15 MB de imagem em base64 (inflação de ~33%) + folga pro resto do JSON. */
+const MAX_ATTACHMENT_BODY = 21 * 1024 * 1024
+
 const FAMILIES: readonly string[] = Object.freeze([
   '/api/tasks',
   '/api/backlog',
@@ -1062,6 +1156,11 @@ function collectBacklogPatch(
     const labels = stringList(body['labels'])
     if (labels === undefined) return 'labels deve ser uma lista de texto'
     patch['labels'] = [...labels]
+  }
+  if (Object.hasOwn(body, 'images')) {
+    const images = stringList(body['images'])
+    if (images === undefined) return 'images deve ser uma lista de texto'
+    patch['images'] = [...images]
   }
   if (Object.hasOwn(body, 'state')) {
     const state = trimmedString(body['state'])

@@ -159,6 +159,7 @@ export function taskView(task: Task, now: number): TaskView {
  * juntos, e é para isso que serve este comentário.
  */
 const BACKLOG_STATE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  suggested: 'Sugestão',
   open: 'Aberto',
   planned: 'Planejado',
   done: 'Concluído',
@@ -166,6 +167,7 @@ const BACKLOG_STATE_LABELS: Readonly<Record<string, string>> = Object.freeze({
 })
 
 export const BACKLOG_STATES: readonly string[] = Object.freeze([
+  'suggested',
   'open',
   'planned',
   'done',
@@ -173,6 +175,7 @@ export const BACKLOG_STATES: readonly string[] = Object.freeze([
 ])
 
 const BACKLOG_TONES: Readonly<Record<string, ViewTone>> = Object.freeze({
+  suggested: 'info',
   open: 'neutral',
   planned: 'info',
   done: 'success',
@@ -199,6 +202,7 @@ export interface BacklogItemView {
   readonly tone: ViewTone
   readonly priority: number
   readonly labels: readonly string[]
+  readonly images: readonly string[]
   readonly source: string
   readonly planId?: string
   readonly lastRejections?: readonly string[]
@@ -289,6 +293,7 @@ export function backlogItemView(
     tone: BACKLOG_TONES[item.state] ?? 'neutral',
     priority: item.priority,
     labels: item.labels,
+    images: item.images ?? [],
     source: item.source,
     ...(item.planId === undefined ? {} : { planId: item.planId }),
     ...(item.lastRejections === undefined ? {} : { lastRejections: item.lastRejections }),

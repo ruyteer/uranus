@@ -951,6 +951,89 @@ a {
   color: rgb(var(--danger));
 }
 
+/* Seletor de imagens do backlog: arrastar-e-soltar ou clicar pra escolher. */
+.imagepicker__drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: rgb(var(--fg-2));
+  text-align: center;
+  cursor: pointer;
+  background: rgb(var(--bg-2));
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r-md);
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.imagepicker__drop:hover,
+.imagepicker__drop.is-over {
+  background: rgb(var(--bg-3));
+  border-color: var(--border-3);
+}
+
+.imagepicker__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.imagepicker__chip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 5.5rem;
+}
+
+.imagepicker__thumb {
+  width: 5.5rem;
+  height: 5.5rem;
+  object-fit: cover;
+  background: rgb(var(--bg-3));
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+}
+
+.imagepicker__thumb--pending {
+  opacity: 0.5;
+}
+
+.imagepicker__name {
+  overflow: hidden;
+  font-size: var(--fs-2xs);
+  color: rgb(var(--fg-2));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imagepicker__remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  font-size: var(--fs-2xs);
+  line-height: 1;
+  color: rgb(var(--fg-1));
+  cursor: pointer;
+  background: rgb(var(--bg-1));
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-full);
+}
+
+.imagepicker__remove:hover {
+  background: rgb(var(--danger) / 0.15);
+  border-color: rgb(var(--danger));
+}
+
 .input,
 .select,
 .textarea {
@@ -1237,7 +1320,10 @@ table.tbl td.right {
 .kanban {
   display: grid;
   gap: var(--sp-4);
-  grid-template-columns: repeat(4, minmax(15rem, 1fr));
+  /* 5 colunas: as 5 entradas de `BACKLOG_COLUMNS` em `lib/aggregate.js`
+     (Sugestões, Aberto, Planejado, Concluído, Descartado) — os dois números
+     mudam juntos. */
+  grid-template-columns: repeat(5, minmax(13rem, 1fr));
   align-items: start;
 }
 
@@ -1294,6 +1380,11 @@ table.tbl td.right {
   flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-3);
+  /* Coluna com muitos itens rola dentro dela mesma em vez de esticar o
+     kanban inteiro — sem isto, uma coluna cheia empurrava o resto da página
+     pra baixo do rodapé da tela. */
+  max-height: 32rem;
+  overflow-y: auto;
 }
 
 .column__empty {
