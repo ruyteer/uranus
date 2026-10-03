@@ -35,23 +35,12 @@ conhece a sua empresa. Para render bem, ele precisa de:
 A armadura não luta no lugar de quem a veste. Ela protege, dá força e dá direção. É exatamente isso
 que o Uranus faz com o Claude.
 
-```mermaid
-flowchart LR
-    Voce([Você]) -- pedidos --> Backlog
-    subgraph Armadura["Uranus (a armadura)"]
-        Backlog[Backlog<br/>fila de pedidos]
-        Memoria[Memória<br/>o que já foi aprendido]
-        Manual[CLAUDE.md + agentes<br/>como trabalhar aqui]
-        Painel[Painel web<br/>o que está acontecendo]
-    end
-    Backlog --> Claude
-    Memoria --> Claude
-    Manual --> Claude
-    Claude((Claude Code)) -- grava aprendizados --> Memoria
-    Claude -- atividade ao vivo --> Painel
-    Painel --> Voce
-    Claude -- código --> Projeto[(Seu projeto)]
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/uranus-armadura-dark.svg">
+    <img alt="O Uranus é a armadura em volta do Claude Code: você manda pedidos para o backlog; o Claude lê os pedidos, lê e grava a memória, segue as regras do CLAUDE.md e dos 12 agentes, mostra o que faz no painel e entrega código revisado ao seu projeto — de forma econômica, eficiente, segura e escalável." src="../assets/uranus-armadura-light.svg" width="900">
+  </picture>
+</p>
 
 ## "Treinar" o Claude: o que isso significa aqui
 

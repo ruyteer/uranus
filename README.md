@@ -16,21 +16,12 @@ Quem programa continua sendo o Claude. O Uranus treina, organiza, protege e most
 
 ## Em 30 segundos
 
-```mermaid
-flowchart LR
-    Voce([Você]) -- "pedidos" --> U
-    subgraph U["🛡️ Uranus"]
-        direction TB
-        B[Backlog<br/>o que fazer]
-        M[Memória<br/>o que já aprendeu]
-        T[CLAUDE.md + 12 agentes<br/>como trabalhar aqui]
-        P[Painel web<br/>o que está acontecendo]
-    end
-    U -- "contexto certo" --> C((Claude Code))
-    C -- "código" --> Proj[(Seu projeto)]
-    C -- "aprendizados" --> M
-    C -- "atividade ao vivo" --> P
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/uranus-armadura-dark.svg">
+    <img alt="O Uranus é a armadura em volta do Claude Code: você manda pedidos para o backlog; o Claude lê os pedidos, lê e grava a memória, segue as regras do CLAUDE.md e dos 12 agentes, mostra o que faz no painel e entrega código revisado ao seu projeto — de forma econômica, eficiente, segura e escalável." src="docs/assets/uranus-armadura-light.svg" width="900">
+  </picture>
+</p>
 
 | Peça           | O que faz por você                                                             | Saiba mais                                                   |
 | -------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------ |
