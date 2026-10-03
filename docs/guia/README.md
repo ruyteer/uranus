@@ -14,6 +14,7 @@ as anteriores explicaram.
 | 7   | [Referência de comandos](07-comandos.md)                    | Consulta rápida                                                     | —                |
 | 8   | [Configuração e plugins](08-configuracao-e-plugins.md)      | Quem quer ajustar o comportamento                                   | 6 min            |
 | 9   | [Problemas comuns](09-problemas-comuns.md)                  | Quando algo não funciona                                            | —                |
+| 10  | [Vídeo e motion](10-video-e-motion.md)                      | Quem quer que o Claude produza ou edite vídeos                      | 5 min            |
 | —   | [Glossário](glossario.md)                                   | Quando aparecer uma palavra estranha                                | —                |
 
 Quer ir além do uso e entender como o Uranus foi projetado por dentro? Veja a

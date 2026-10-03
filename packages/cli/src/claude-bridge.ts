@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ProjectDigest } from '@uranus/core'
+import { BUNDLED_SKILLS, installedSkillDirName, writeBundledSkills } from './bundled-skills.js'
 
 /**
  * Ponte com o Claude Code nativo (`.claude/`).
@@ -9,7 +10,8 @@ import type { ProjectDigest } from '@uranus/core'
  * valendo dentro do Kernel, mas o modo `uranus chat` entrega a orquestração
  * pro próprio Claude Code, via os subagentes nativos dele). Este módulo gera
  * o que o Claude Code lê sozinho ao abrir uma sessão no projeto:
- * `CLAUDE.md`, `.claude/agents/*.md` e os hooks de observabilidade em
+ * `CLAUDE.md`, `.claude/agents/*.md`, as skills embarcadas em
+ * `.claude/skills/uranus-*` e os hooks de observabilidade em
  * `.claude/settings.json` — para que a orquestração já chegue "treinada",
  * sem o usuário escrever prompt nenhum.
  *
@@ -302,6 +304,11 @@ export function renderClaudeMdBody(input: ClaudeMdInput): string {
       '(open|planned|done|dropped) para fechar, descartar ou reabrir um item você mesmo — por exemplo quando o ' +
       'usuário decide abandonar um item em conversa, ou quando um item já foi resolvido.',
     '',
+    'Pedido feito direto na conversa também entra no backlog: se não for trivial (mais de uma subtask, ou algo ' +
+      'que vale acompanhar), registre com `uranus backlog add "título" --body "o pedido, nas palavras do ' +
+      'usuário"` antes de planejar. O fluxo é sempre o mesmo: item de backlog → `planner` quebra em subtasks → ' +
+      'especialista no modelo certo para a dificuldade → testes → `reviewer` → commit/PR → memória.',
+    '',
     '## Memória',
     '',
     'Além de ler `.uranus/memory/`, grave o que você aprender de relevante para o futuro com ' +
@@ -342,6 +349,18 @@ export function renderClaudeMdBody(input: ClaudeMdInput): string {
       'seguir sem: rode `/find-skills` (skill oficial da vercel-labs) se ela estiver instalada, ou, se ' +
       'não estiver, entre no painel (`uranus dashboard` → aba Skills) e instale a que faltar antes de ' +
       'continuar a subtask.',
+    '',
+    '## Conhecimento embarcado pelo Uranus',
+    '',
+    'Estas skills vêm com o Uranus e ficam em `.claude/skills/` — o Claude Code já as carrega quando o pedido ' +
+      'bate com a descrição. Cada uma traz um playbook com o que já foi aprovado e reprovado em trabalho real; ' +
+      'siga-o usando os materiais DESTE projeto (tokens, fontes, logo, componentes, telas reais), não uma ' +
+      'estética genérica.',
+    '',
+    ...BUNDLED_SKILLS.map(
+      (s) =>
+        `- **${s.title}** (\`.claude/skills/${installedSkillDirName(s.id)}/\`) — ${s.whenToUse}.`,
+    ),
     '',
     '## Catálogo de agentes',
     '',
@@ -471,7 +490,8 @@ export function mergeManagedBlock(existing: string | undefined, body: string): s
 }
 
 export interface HookCommand {
-  readonly event: 'UserPromptSubmit' | 'Stop' | 'SubagentStart' | 'SubagentStop' | 'PreToolUse' | 'PostToolUse'
+  readonly event:
+    'UserPromptSubmit' | 'Stop' | 'SubagentStart' | 'SubagentStop' | 'PreToolUse' | 'PostToolUse'
   readonly matcher?: string
   readonly command: string
 }
@@ -644,6 +664,8 @@ export async function writeClaudeConfig(
     await writeFile(path, renderAgentFile(spec), 'utf8')
     wrote.push(`.claude/agents/${agentFileName(spec.id)}`)
   }
+
+  wrote.push(...(await writeBundledSkills(claudeDir)))
 
   const settingsPath = join(claudeDir, 'settings.json')
   const existingSettings = await readFile(settingsPath, 'utf8').catch(() => undefined)

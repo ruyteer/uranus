@@ -3,8 +3,8 @@
 ← [Primeiros passos](02-primeiros-passos.md) · Próximo: [Os quatro pilares](04-os-quatro-pilares.md) →
 
 O Claude Code, ao abrir uma sessão numa pasta, lê sozinho alguns arquivos: o `CLAUDE.md` (as
-instruções do projeto), `.claude/agents/` (os especialistas que ele pode chamar) e
-`.claude/settings.json` (hooks e permissões). **O Uranus escreve esses arquivos por você**, e os
+instruções do projeto), `.claude/agents/` (os especialistas que ele pode chamar), `.claude/skills/`
+(conhecimentos especializados) e `.claude/settings.json` (hooks e permissões). **O Uranus escreve esses arquivos por você**, e os
 mantém atualizados a cada `uranus init`, `uranus claude` e `uranus chat`.
 
 É isso que chamamos de treinar: o Claude chega no projeto já sabendo como trabalhar ali.
@@ -23,6 +23,7 @@ flowchart LR
         direction TB
         C["📘 CLAUDE.md<br/><small>manual do projeto</small>"]
         A["🤖 agents/uranus-*.md<br/><small>12 especialistas</small>"]
+        S["🎬 skills/uranus-*<br/><small>conhecimento embarcado</small>"]
         H["🔌 settings.json<br/><small>hooks para o painel</small>"]
     end
     D --> G
@@ -31,6 +32,7 @@ flowchart LR
     B -.-> G
     G --> C
     G --> A
+    G --> S
     G --> H
 
     classDef fonte fill:#eef4ff,stroke:#2f81f7,color:#1f2328
@@ -38,7 +40,7 @@ flowchart LR
     classDef alvo fill:#fdf1ec,stroke:#d97757,color:#1f2328
     class D,I,M,B fonte
     class G gen
-    class C,A,H alvo
+    class C,A,S,H alvo
     style Fontes fill:transparent,stroke:#2f81f7,stroke-dasharray:4 4
     style Claude fill:transparent,stroke:#d97757,stroke-dasharray:4 4
 ```
@@ -51,16 +53,17 @@ As setas cheias são o que entra no conteúdo gerado; as pontilhadas são o que 
 A parte que o Uranus gera fica entre marcadores (`<!-- URANUS:BEGIN -->` … `<!-- URANUS:END -->`).
 **Tudo que você escrever fora deles nunca é tocado.** Dentro, o Claude recebe:
 
-| Seção                 | O que ensina                                                                  |
-| --------------------- | ----------------------------------------------------------------------------- |
-| Visão do projeto      | Linguagens, frameworks e comando de teste detectados automaticamente          |
-| Backlog               | Onde estão os pedidos e como marcar um item como feito/descartado             |
-| Memória               | Ler `.uranus/memory/` antes de assumir um padrão, e gravar o que aprender     |
-| Catálogo de agentes   | Quem são os especialistas e quando chamar cada um                             |
-| Regras de despacho    | Paralelizar, usar o modelo mais barato que resolve, revisar antes de entregar |
-| Skills                | Conferir se falta uma skill antes de tarefas fora do comum                    |
-| Teste no navegador    | Validar interfaces web abrindo de verdade, não só relendo o código            |
-| Instruções do projeto | As regras que você cadastrou (pelo painel ou em `.uranus/instructions/`)      |
+| Seção                  | O que ensina                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| Visão do projeto       | Linguagens, frameworks e comando de teste detectados automaticamente          |
+| Backlog                | Onde estão os pedidos e como marcar um item como feito/descartado             |
+| Memória                | Ler `.uranus/memory/` antes de assumir um padrão, e gravar o que aprender     |
+| Catálogo de agentes    | Quem são os especialistas e quando chamar cada um                             |
+| Regras de despacho     | Paralelizar, usar o modelo mais barato que resolve, revisar antes de entregar |
+| Skills                 | Conferir se falta uma skill antes de tarefas fora do comum                    |
+| Conhecimento embarcado | As skills que vêm com o Uranus (ex.: vídeo e motion) e quando usar cada uma   |
+| Teste no navegador     | Validar interfaces web abrindo de verdade, não só relendo o código            |
+| Instruções do projeto  | As regras que você cadastrou (pelo painel ou em `.uranus/instructions/`)      |
 
 Instruções com escopo de pasta viram um `CLAUDE.md` dentro daquela pasta — útil em monorepos,
 porque o Claude Code lê o `CLAUDE.md` mais próximo de onde está mexendo.
@@ -92,6 +95,20 @@ que delega para especialistas. Cada um tem uma função e um "tamanho" de modelo
 
 Os arquivos ficam em `.claude/agents/uranus-*.md`. Um agente que você escrever à mão com outro nome
 nunca é sobrescrito.
+
+## Conhecimento embarcado
+
+Além dos agentes, o Uranus instala **skills**: manuais de trabalhos especializados, escritos a
+partir de produções reais (o que foi aprovado, o que foi reprovado, os parâmetros que funcionaram).
+Ficam em `.claude/skills/uranus-*/`, e o Claude Code carrega cada uma sozinho quando o pedido bate
+com o assunto.
+
+| Skill                 | Ensina o Claude a                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| `uranus-motion-video` | Produzir e editar vídeo com os materiais do projeto — veja [Vídeo e motion](10-video-e-motion.md) |
+
+Como os agentes, só as pastas com prefixo `uranus-` são do Uranus; uma skill sua com outro nome
+nunca é tocada.
 
 ## O ciclo de aprendizado
 
