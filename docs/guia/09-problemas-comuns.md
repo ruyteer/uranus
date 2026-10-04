@@ -1,6 +1,6 @@
 # 9. Problemas comuns
 
-← [Configuração e plugins](08-configuracao-e-plugins.md) · [Índice do guia](README.md)
+← [Configuração e plugins](08-configuracao-e-plugins.md) · Próximo: [Vídeo e motion](10-video-e-motion.md) →
 
 Primeiro passo para qualquer problema: `uranus doctor`.
 
@@ -40,4 +40,4 @@ A porta 4319 pode estar ocupada: `uranus dashboard --port 4321`.
 
 ---
 
-← [Configuração e plugins](08-configuracao-e-plugins.md) · [Índice do guia](README.md)
+← [Configuração e plugins](08-configuracao-e-plugins.md) · Próximo: [Vídeo e motion](10-video-e-motion.md) →

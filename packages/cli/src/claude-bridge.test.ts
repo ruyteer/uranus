@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { withTempDir } from '@uranus/testkit'
@@ -15,6 +15,7 @@ import {
   renderClaudeMdBody,
   writeClaudeConfig,
 } from './claude-bridge.js'
+import { BUNDLED_SKILLS, installedSkillDirName } from './bundled-skills.js'
 
 describe('mergeManagedBlock — nunca apaga o que é do usuário', () => {
   it('sem CLAUDE.md prévio, cria só o bloco gerido', () => {
@@ -236,5 +237,55 @@ describe('writeClaudeConfig — instruções por escopo', () => {
       const scoped = await readFile(join(dir, 'packages', 'api', 'CLAUDE.md'), 'utf8')
       expect(scoped.split(MANAGED_BEGIN)).toHaveLength(2)
     })
+  })
+})
+
+describe('writeClaudeConfig — skills embarcadas', () => {
+  it('instala cada skill embarcada em .claude/skills/uranus-<id>/ com o playbook junto', async () => {
+    await withTempDir(async (dir) => {
+      const result = await writeClaudeConfig({ projectDir: dir, projectName: 'demo' })
+      for (const skill of BUNDLED_SKILLS) {
+        const skillDir = join(dir, '.claude', 'skills', installedSkillDirName(skill.id))
+        const skillMd = await readFile(join(skillDir, 'SKILL.md'), 'utf8')
+        // O Claude Code casa a skill pelo `name` do frontmatter — tem de bater com a pasta.
+        expect(skillMd).toMatch(new RegExp(`^---\\nname: ${installedSkillDirName(skill.id)}\\n`))
+        for (const file of skill.files) {
+          expect(result.wrote).toContain(
+            `.claude/skills/${installedSkillDirName(skill.id)}/${file}`,
+          )
+        }
+      }
+    })
+  })
+
+  it('a skill de vídeo traz o playbook e o CLAUDE.md aponta para ela', async () => {
+    await withTempDir(async (dir) => {
+      await writeClaudeConfig({ projectDir: dir, projectName: 'demo' })
+      const playbook = await readFile(
+        join(dir, '.claude', 'skills', 'uranus-motion-video', 'PLAYBOOK.md'),
+        'utf8',
+      )
+      expect(playbook).toContain('Regras de ouro')
+      const root = await readFile(join(dir, 'CLAUDE.md'), 'utf8')
+      expect(root).toContain('.claude/skills/uranus-motion-video/')
+    })
+  })
+
+  it('não toca numa skill do usuário com outro nome', async () => {
+    await withTempDir(async (dir) => {
+      const mine = join(dir, '.claude', 'skills', 'minha-skill')
+      await mkdir(mine, { recursive: true })
+      await writeFile(join(mine, 'SKILL.md'), 'feita à mão', 'utf8')
+      await writeClaudeConfig({ projectDir: dir, projectName: 'demo' })
+      expect(await readFile(join(mine, 'SKILL.md'), 'utf8')).toBe('feita à mão')
+    })
+  })
+})
+
+describe('renderClaudeMdBody — fluxo do pedido', () => {
+  it('ensina a registrar no backlog um pedido feito direto na conversa', () => {
+    const body = renderClaudeMdBody({ projectName: 'demo' })
+    expect(body).toContain('Pedido feito direto na conversa também entra no backlog')
+    expect(body).toContain('uranus backlog add')
   })
 })

@@ -17,7 +17,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "engines": {
     "node": ">=22.0.0"

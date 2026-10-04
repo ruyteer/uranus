@@ -81,6 +81,9 @@ uranus backlog list
 
 ## Passo 4 — Colocar o Claude para trabalhar
 
+O `uranus init` já deixou tudo pronto: se você abrir o Claude Code direto (`claude`), ele já está
+treinado. O `uranus chat` faz o mesmo, mas atualiza o contexto antes de abrir:
+
 ```bash
 uranus chat
 ```
